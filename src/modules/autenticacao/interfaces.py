@@ -2,17 +2,31 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Protocol
 
-from src.modules.autenticacao.schemas import Perfil, UsuarioAutenticado
+from src.modules.autenticacao.schemas import CriarUsuarioRequest, Perfil, UsuarioAutenticado
 
 
 class IAutenticadorInstitucional(Protocol):
-    """Contrato de autenticação contra a base institucional (RF01, D03)."""
+    """Contrato de autenticação e gestão de usuários (RF01, D03)."""
 
     def autenticar(self, matricula: str, senha: str) -> UsuarioAutenticado: ...
 
     def obter_por_id(self, usuario_id: str) -> UsuarioAutenticado | None: ...
 
     def listar_por_perfil(self, perfil: Perfil) -> Sequence[UsuarioAutenticado]: ...
+
+    def listar_usuarios(self) -> Sequence[UsuarioAutenticado]: ...
+
+    def criar_usuario(self, dados: CriarUsuarioRequest) -> UsuarioAutenticado: ...
+
+    def redefinir_senha(self, usuario_id: str, nova_senha: str) -> None: ...
+
+    def alterar_propria_senha(
+        self, usuario_id: str, senha_atual: str, nova_senha: str
+    ) -> None: ...
+
+    def solicitar_recuperacao_senha(self, email: str) -> str | None: ...
+
+    def confirmar_recuperacao_senha(self, token: str, nova_senha: str) -> None: ...
 
 
 class ILimitadorTentativas(Protocol):

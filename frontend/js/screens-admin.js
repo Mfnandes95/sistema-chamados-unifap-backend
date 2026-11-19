@@ -230,12 +230,45 @@
               <span class="txt"><b>Acesso a este sistema</b><span>${self ? 'Você não pode desativar o próprio acesso.' : 'Desativar bloqueia a entrada neste sistema. Não altera o vínculo institucional.'}</span></span></label>
           </div>
           <div class="sticky-actions">
+            <button class="btn btn-secondary" type="button" data-resetpw>${ic('lock_reset')}Redefinir senha</button>
             <button class="btn btn-ghost" type="button" data-discard>Descartar</button>
             <button class="btn btn-primary" type="submit">Salvar alterações</button>
           </div>
-          ${audit ? `<div class="panel-foot">${ic('history')}Última alteração: ${esc(DB.user(audit.autor).nome)} em ${fmt.dataHora(audit.em)}.</div>` : ''}
+          ${audit ? `<div class="panel-foot">${ic('history')}Última alteração: ${esc(DB.user(audit.autor)?.nome || 'Administrador')} em ${fmt.dataHora(audit.em)}.</div>` : ''}
         </form>`;
         const f = $(edit, '[data-editform]');
+        $(edit, '[data-resetpw]').addEventListener('click', async () => {
+          const fd = await dialog({
+            title: `Redefinir senha de ${esc(u.nome)}`,
+            body: `<p>Defina manualmente uma nova senha temporária (mínimo 8 caracteres). O usuário poderá alterá-la depois no próprio menu.</p>
+              <div class="field"><label for="adm-pw">Nova senha</label><input class="input" id="adm-pw" name="nova_senha" type="password" autocomplete="new-password"></div>`,
+            confirm: 'Redefinir senha',
+            validate: (vals, form) => {
+              const p = vals.get('nova_senha');
+              const ep = form.querySelector('#adm-pw');
+              const m = p.length < 8 ? 'A senha precisa ter pelo menos 8 caracteres.' : '';
+              fieldError(ep, m);
+              if (m) ep.focus();
+              return m;
+            }
+          });
+          if (!fd) return;
+          const tok = (() => { try { return sessionStorage.getItem('unifap-api-jwt') || ''; } catch (err) { return ''; } })();
+          try {
+            const r = await fetch(`/api/v1/usuarios/${encodeURIComponent(u.id)}/redefinir-senha`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tok },
+              body: JSON.stringify({ nova_senha: fd.get('nova_senha') })
+            });
+            if (!r.ok) {
+              const d = await r.json().catch(() => ({}));
+              return toast(d.mensagem || 'Não foi possível redefinir a senha.', 'err');
+            }
+            toast(`Senha de ${u.nome} redefinida com sucesso.`);
+          } catch (err) {
+            toast('Erro de conexão ao redefinir senha.', 'err');
+          }
+        });
         $(edit, '[data-discard]').addEventListener('click', () => { drawEdit(); toast('Alterações descartadas.'); });
         f.addEventListener('submit', async e => {
           e.preventDefault();
@@ -267,8 +300,32 @@
           drawList(); drawEdit();
         });
       };
-      if (!usrSel) usrSel = 'u3';
+      const carregarUsuariosApi = async () => {
+        const tok = (() => { try { return sessionStorage.getItem('unifap-api-jwt') || ''; } catch (err) { return ''; } })();
+        if (!tok) return;
+        try {
+          const r = await fetch('/api/v1/usuarios', { headers: { Authorization: 'Bearer ' + tok } });
+          if (!r.ok) return;
+          const lista = await r.json();
+          const mapa = {
+            ADMIN: ['admin', 'gestor', 'solicitante'],
+            GESTOR: ['gestor', 'solicitante'],
+            EXECUTOR: ['executor', 'solicitante'],
+            SOLICITANTE: ['solicitante']
+          };
+          DB.s.usuarios = lista.map(u => ({
+            id: u.id, nome: u.nome, login: u.matricula, ident: u.matricula, email: u.email,
+            tipo: u.perfil === 'SOLICITANTE' ? 'Discente' : 'Servidor',
+            vinculoAtivo: u.vinculo_ativo, acessoAtivo: u.vinculo_ativo,
+            perfis: mapa[u.perfil] || ['solicitante'], setor: u.setor || ''
+          }));
+          if (!usrSel || !DB.user(usrSel)) usrSel = DB.s.usuarios[0]?.id || null;
+          DB.save(); drawList(); drawEdit();
+        } catch (err) { /* mantém lista atual */ }
+      };
+      if (!usrSel) usrSel = DB.s.usuarios[0]?.id || null;
       drawList(); drawEdit();
+      carregarUsuariosApi();
       $(root, '[data-filters]').addEventListener('input', e => { usrF[e.target.name] = e.target.value; drawList(); });
       $(root, '[data-filters]').addEventListener('submit', e => e.preventDefault());
       list.addEventListener('click', e => {
@@ -280,28 +337,52 @@
       $(root, '[data-new]').addEventListener('click', async () => {
         const fd = await dialog({
           title: 'Cadastrar usuário',
-          body: `<p>Informe a matrícula ou o SIAPE. Nome e vínculo são confirmados na base institucional.</p>
+          body: `<p>Crie uma conta institucional com acesso imediato ao sistema.</p>
             <div class="field"><label for="nid">Matrícula ou SIAPE</label><input class="input" id="nid" name="id" inputmode="numeric"></div>
             <div class="field"><label for="nnome">Nome completo</label><input class="input" id="nnome" name="nome"></div>
-            <div class="field"><label for="ntipo">Tipo de vínculo</label><select class="select" id="ntipo" name="tipo"><option>Discente</option><option>Docente</option><option>Técnico-administrativo</option></select></div>`,
+            <div class="field"><label for="nemail">E-mail institucional</label><input class="input" id="nemail" name="email" type="email" placeholder="nome@unifap.br"></div>
+            <div class="field"><label for="nsenha">Senha inicial</label><input class="input" id="nsenha" name="senha" type="password" autocomplete="new-password"></div>
+            <div class="field"><label for="nperfil">Perfil</label><select class="select" id="nperfil" name="perfil"><option value="SOLICITANTE">Solicitante</option><option value="EXECUTOR">Executor</option><option value="GESTOR">Gestor / triagem</option><option value="ADMIN">Administrador</option></select></div>
+            <div class="field"><label for="ntipo">Tipo de vínculo</label><select class="select" id="ntipo" name="tipo"><option value="discente">Discente</option><option value="docente">Docente</option><option value="tecnico_administrativo">Técnico-administrativo</option></select></div>`,
           confirm: 'Cadastrar',
           validate: (f, form) => {
             const id = f.get('id').replace(/\D/g, ''), nome = f.get('nome').trim();
+            const email = f.get('email').trim(), senha = f.get('senha');
             const eid = form.querySelector('#nid'), en = form.querySelector('#nnome');
-            let m1 = !id ? 'Informe a matrícula ou o SIAPE.' : id.length < 7 ? 'O número precisa ter pelo menos 7 dígitos.' : DB.s.usuarios.some(u => u.login === id) ? 'Já existe um usuário com esse número.' : '';
-            let m2 = nome.split(' ').length < 2 ? 'Informe nome e sobrenome.' : '';
-            fieldError(eid, m1); fieldError(en, m2);
-            if (m1) eid.focus(); else if (m2) en.focus();
-            return m1 || m2;
+            const ee = form.querySelector('#nemail'), es = form.querySelector('#nsenha');
+            const m1 = !id || id.length < 6 ? 'Informe a matrícula/SIAPE (mínimo 6 dígitos).' : '';
+            const m2 = nome.length < 3 ? 'Informe o nome completo.' : '';
+            const m3 = !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) ? 'Informe um e-mail válido.' : '';
+            const m4 = senha.length < 8 ? 'A senha inicial precisa ter pelo menos 8 caracteres.' : '';
+            fieldError(eid, m1); fieldError(en, m2); fieldError(ee, m3); fieldError(es, m4);
+            if (m1) eid.focus(); else if (m2) en.focus(); else if (m3) ee.focus(); else if (m4) es.focus();
+            return m1 || m2 || m3 || m4;
           }
         });
         if (!fd) return;
-        const id = fd.get('id').replace(/\D/g, ''), tipo = fd.get('tipo');
-        const nu = { id: 'u' + (DB.s.usuarios.length + 1) + Date.now() % 1000, nome: fd.get('nome').trim(), login: id, ident: tipo === 'Discente' ? id : 'SIAPE ' + id, tipo, vinculoAtivo: true, acessoAtivo: true, perfis: ['solicitante'], setor: '' };
-        DB.s.usuarios.unshift(nu);
-        DB.s.auditoria.push({ em: nowIso(), autor: me().id, texto: `Usuário ${nu.nome} cadastrado.` });
-        DB.save(); usrSel = nu.id; drawList(); drawEdit();
-        toast(`${nu.nome} cadastrado como solicitante.`);
+        const tok = (() => { try { return sessionStorage.getItem('unifap-api-jwt') || ''; } catch (err) { return ''; } })();
+        try {
+          const r = await fetch('/api/v1/usuarios', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tok },
+            body: JSON.stringify({
+              matricula: fd.get('id').replace(/\D/g, ''),
+              nome: fd.get('nome').trim(),
+              email: fd.get('email').trim(),
+              senha: fd.get('senha'),
+              perfil: fd.get('perfil'),
+              vinculo: fd.get('tipo'),
+              vinculo_ativo: true
+            })
+          });
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok) return toast(d.mensagem || 'Não foi possível cadastrar o usuário.', 'err');
+          usrSel = d.id;
+          await carregarUsuariosApi();
+          toast(`${d.nome} cadastrado com sucesso.`);
+        } catch (err) {
+          toast('Erro de conexão ao cadastrar usuário.', 'err');
+        }
       });
     }
   };

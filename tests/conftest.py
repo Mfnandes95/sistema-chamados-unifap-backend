@@ -17,6 +17,7 @@ MATRICULAS = {
     "executor": "30000001",
     "executor2": "30000002",
     "gestor": "40000001",
+    "admin": "50000001",
 }
 
 CHAMADO_VALIDO = {

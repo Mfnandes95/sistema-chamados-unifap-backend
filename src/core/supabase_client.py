@@ -18,6 +18,7 @@ class SupabaseClient:
     def __init__(self, url: str, secret_key: str, timeout: float = 15.0) -> None:
         self._root_url = url.rstrip("/")
         self._base_url = self._root_url + "/rest/v1"
+        self._secret_key = secret_key
         self._headers = {
             "apikey": secret_key,
             "Content-Type": "application/json",
@@ -53,6 +54,71 @@ class SupabaseClient:
         except httpx.HTTPError as exc:
             log_app.error("Falha ao contatar Supabase Auth: %s", exc)
             return False
+
+    def _auth_admin_headers(self) -> dict[str, str]:
+        return {
+            "apikey": self._secret_key,
+            "Authorization": f"Bearer {self._secret_key}",
+            "Content-Type": "application/json",
+        }
+
+    def criar_usuario_auth(self, email: str, senha: str) -> str:
+        """Cria usuário no Supabase Auth e retorna o UUID."""
+        try:
+            r = httpx.post(
+                f"{self._root_url}/auth/v1/admin/users",
+                headers=self._auth_admin_headers(),
+                json={"email": email, "password": senha, "email_confirm": True},
+                timeout=15.0,
+            )
+        except httpx.HTTPError as exc:
+            log_app.error("Falha de rede ao criar usuário no Supabase Auth: %s", exc)
+            raise ErroPersistenciaSupabase("Serviço de autenticação temporariamente indisponível.") from exc
+        if r.status_code in (409, 422):
+            raise ConflitoConcorrencia("E-mail já cadastrado no serviço de autenticação.")
+        if r.status_code >= 400:
+            log_app.error("Erro Supabase Auth criar usuário (%s): %s", r.status_code, r.text[:300])
+            raise ErroPersistenciaSupabase("Não foi possível criar o usuário no serviço de autenticação.")
+        dados = r.json()
+        return str(dados["id"])
+
+    def deletar_usuario_auth(self, usuario_id: str) -> None:
+        try:
+            httpx.delete(
+                f"{self._root_url}/auth/v1/admin/users/{usuario_id}",
+                headers=self._auth_admin_headers(),
+                timeout=10.0,
+            )
+        except httpx.HTTPError as exc:
+            log_app.error("Falha ao reverter usuário no Supabase Auth: %s", exc)
+
+    def atualizar_senha_auth(self, usuario_id: str, nova_senha: str) -> None:
+        """Atualiza a senha de um usuário no Supabase Auth (admin ou autoatendimento)."""
+        try:
+            r = httpx.put(
+                f"{self._root_url}/auth/v1/admin/users/{usuario_id}",
+                headers=self._auth_admin_headers(),
+                json={"password": nova_senha},
+                timeout=15.0,
+            )
+        except httpx.HTTPError as exc:
+            log_app.error("Falha de rede ao atualizar senha no Supabase Auth: %s", exc)
+            raise ErroPersistenciaSupabase("Serviço de autenticação temporariamente indisponível.") from exc
+        if r.status_code >= 400:
+            log_app.error("Erro Supabase Auth atualizar senha (%s): %s", r.status_code, r.text[:300])
+            raise ErroPersistenciaSupabase("Não foi possível atualizar a senha.")
+
+    def solicitar_recuperacao_auth(self, email: str, api_key: str) -> None:
+        """Dispara e-mail de recuperação de senha nativo do Supabase Auth."""
+        try:
+            httpx.post(
+                f"{self._root_url}/auth/v1/recover",
+                headers={"apikey": api_key, "Content-Type": "application/json"},
+                json={"email": email},
+                timeout=10.0,
+            )
+        except httpx.HTTPError as exc:
+            log_app.error("Falha ao solicitar recuperação no Supabase Auth: %s", exc)
 
     def select(self, tabela: str, params: dict[str, str] | None = None) -> list[dict[str, Any]]:
         r = self._request("GET", f"/{tabela}", params=params)

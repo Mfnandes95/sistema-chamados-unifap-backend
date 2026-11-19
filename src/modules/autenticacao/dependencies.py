@@ -65,11 +65,15 @@ exigir_usuario_ativo = _exigir(*Perfil)
 exigir_solicitante_ativo = _exigir(Perfil.SOLICITANTE)
 exigir_executor = _exigir(Perfil.EXECUTOR)
 exigir_gestor = _exigir(Perfil.GESTOR)
-exigir_equipe_tecnica = _exigir(Perfil.EXECUTOR, Perfil.GESTOR)
+exigir_admin = _exigir(Perfil.ADMIN)
+exigir_gestor_ou_admin = _exigir(Perfil.GESTOR, Perfil.ADMIN)
+exigir_equipe_tecnica = _exigir(Perfil.EXECUTOR, Perfil.GESTOR, Perfil.ADMIN)
 
 UsuarioAtivo = Annotated[UsuarioAutenticado, Depends(exigir_usuario_ativo)]
 """Obrigatório em toda operação de escrita (RN02 / V03)."""
 SolicitanteAtivo = Annotated[UsuarioAutenticado, Depends(exigir_solicitante_ativo)]
 Executor = Annotated[UsuarioAutenticado, Depends(exigir_executor)]
 Gestor = Annotated[UsuarioAutenticado, Depends(exigir_gestor)]
+Admin = Annotated[UsuarioAutenticado, Depends(exigir_admin)]
+GestorOuAdmin = Annotated[UsuarioAutenticado, Depends(exigir_gestor_ou_admin)]
 EquipeTecnica = Annotated[UsuarioAutenticado, Depends(exigir_equipe_tecnica)]

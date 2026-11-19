@@ -318,7 +318,7 @@ class GestorDeChamado:
 
     @staticmethod
     def _verificar_visibilidade(chamado: Chamado, ator: UsuarioAutenticado) -> None:
-        if ator.perfil is Perfil.GESTOR:
+        if ator.perfil in (Perfil.GESTOR, Perfil.ADMIN):
             return
         if ator.perfil is Perfil.SOLICITANTE and chamado.solicitante_id == ator.id:
             return

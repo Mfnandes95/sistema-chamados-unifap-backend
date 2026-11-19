@@ -230,18 +230,41 @@
         if (open) list.querySelector('button').focus();
       });
       $$(root, '[data-demo]').forEach(b => b.addEventListener('click', () => {
-        ident.value = b.dataset.demo; senha.value = 'demonstracao';
+        ident.value = b.dataset.demo; senha.value = 'Unifap@2026';
         fieldError(ident, ''); fieldError(senha, '');
         list.hidden = true; tg.setAttribute('aria-expanded', 'false');
         form.requestSubmit();
       }));
-      $(root, '[data-forgot]').addEventListener('click', () => dialog({
-        title: 'Esqueceu a senha?',
-        body: '<p>A recuperação de senha ainda não está disponível neste sistema. Procure o Núcleo de Tecnologia da Informação da UNIFAP com um documento de identificação.</p>',
-        confirm: '', cancel: 'Entendi'
-      }));
+      $(root, '[data-forgot]').addEventListener('click', async () => {
+        const fd = await dialog({
+          title: 'Redefinir senha',
+          body: `<p>Informe seu e-mail institucional. Se a conta estiver ativa, enviaremos as instruções para redefinir sua senha.</p>
+            <div class="field"><label for="rec-email">E-mail institucional</label><input class="input" id="rec-email" name="email" type="email" placeholder="nome@unifap.br"></div>`,
+          confirm: 'Enviar instruções',
+          validate: (f, dlgForm) => {
+            const em = f.get('email').trim();
+            const el = dlgForm.querySelector('#rec-email');
+            const m = !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em) ? 'Informe um e-mail válido.' : '';
+            fieldError(el, m);
+            if (m) el.focus();
+            return m;
+          }
+        });
+        if (!fd) return;
+        try {
+          const r = await fetch('/api/v1/auth/esqueci-senha', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: fd.get('email').trim() })
+          });
+          const d = await r.json().catch(() => ({}));
+          toast(d.mensagem || 'Solicitação enviada. Verifique seu e-mail.');
+        } catch (err) {
+          toast('Não foi possível contatar o servidor agora.', 'err');
+        }
+      });
       const banner = (kind, title, text) => { msg.innerHTML = `<div class="banner ${kind}" role="alert">${ic(kind === 'error' ? 'error' : 'info')}<div><b>${title}</b>${text}</div></div>`; };
-      form.addEventListener('submit', e => {
+      form.addEventListener('submit', async e => {
         e.preventDefault();
         msg.innerHTML = '';
         const id = ident.value.replace(/\D/g, ''), pw = senha.value;
@@ -251,16 +274,53 @@
         if (!pw) return senha.focus();
         try { localStorage.setItem('unifap-lembrar', form.lembrar.checked ? '1' : '0'); } catch (err) { /* sem armazenamento */ }
         btn.disabled = true; btn.innerHTML = '<span class="spin" aria-hidden="true"></span>Verificando';
-        setTimeout(() => {
-          btn.disabled = false; btn.textContent = 'Entrar';
-          if (id === '0000') return banner('error', 'Serviço de autenticação indisponível', 'Não foi possível verificar suas credenciais agora. Tente de novo em alguns minutos.');
-          const u = DB.s.usuarios.find(x => x.login === id);
-          if (!u) { banner('error', 'Matrícula, SIAPE ou senha incorretos', 'Confira os dados e tente de novo.'); return senha.select(); }
-          if (!u.vinculoAtivo) return banner('error', 'Vínculo institucional inativo', 'Apenas discentes e servidores com vínculo ativo podem usar o sistema. Regularize sua situação na secretaria acadêmica ou no setor de pessoal.');
-          if (!u.acessoAtivo) return banner('error', 'Acesso ao sistema desativado', 'Seu acesso foi desativado pela administração do sistema. Procure o administrador para reativá-lo.');
-          DB.s.sessao = u.id; DB.save();
+        try {
+          const r = await fetch('/api/v1/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ matricula: id, senha: pw })
+          });
+          const data = await r.json().catch(() => ({}));
+          if (!r.ok) {
+            btn.disabled = false; btn.textContent = 'Entrar';
+            const titulo = r.status === 429 ? 'Muitas tentativas' : 'Matrícula, SIAPE ou senha incorretos';
+            banner('error', titulo, data.mensagem || 'Confira os dados e tente de novo.');
+            return senha.select();
+          }
+          const tok = data.access_token;
+          try { sessionStorage.setItem('unifap-api-jwt', tok); } catch (err) { /* ok */ }
+          const rMe = await fetch('/api/v1/auth/me', { headers: { Authorization: 'Bearer ' + tok } });
+          const uApi = await rMe.json();
+          if (!uApi.vinculo_ativo) {
+            btn.disabled = false; btn.textContent = 'Entrar';
+            try { sessionStorage.removeItem('unifap-api-jwt'); } catch (err) { /* ok */ }
+            return banner('error', 'Vínculo institucional inativo', 'Apenas discentes e servidores com vínculo ativo podem usar o sistema.');
+          }
+          const mapaPerfis = {
+            ADMIN: ['admin', 'gestor', 'solicitante'],
+            GESTOR: ['gestor', 'solicitante'],
+            EXECUTOR: ['executor', 'solicitante'],
+            SOLICITANTE: ['solicitante']
+          };
+          let uLocal = DB.s.usuarios.find(x => x.id === uApi.id || x.login === uApi.matricula);
+          const perfisFront = mapaPerfis[uApi.perfil] || ['solicitante'];
+          if (!uLocal) {
+            uLocal = {
+              id: uApi.id, nome: uApi.nome, login: uApi.matricula, ident: uApi.matricula,
+              email: uApi.email, tipo: uApi.perfil === 'SOLICITANTE' ? 'Discente' : 'Servidor',
+              vinculoAtivo: uApi.vinculo_ativo, acessoAtivo: true, perfis: perfisFront, setor: uApi.setor || ''
+            };
+            DB.s.usuarios.unshift(uLocal);
+          } else {
+            uLocal.id = uApi.id; uLocal.nome = uApi.nome; uLocal.email = uApi.email;
+            uLocal.vinculoAtivo = uApi.vinculo_ativo; uLocal.perfis = perfisFront;
+          }
+          DB.s.sessao = uLocal.id; DB.save();
           location.hash = '#/painel';
-        }, 650);
+        } catch (err) {
+          btn.disabled = false; btn.textContent = 'Entrar';
+          banner('error', 'Serviço de autenticação indisponível', 'Não foi possível verificar suas credenciais agora. Tente de novo em alguns minutos.');
+        }
       });
     }
   };

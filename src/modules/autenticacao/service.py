@@ -1,19 +1,27 @@
 """Adaptadores em memória do módulo de autenticação.
 
-- InMemoryAuthAdapter: simula a base institucional (SIGAA/LDAP) com usuários seed.
+- InMemoryAuthAdapter: simula a base institucional (SIGAA/LDAP) com usuários seed e gestão de contas.
 - InMemoryLimitadorTentativas: proteção contra força bruta (V02).
 - InMemoryListaRevogacao: logout / revogação de tokens (V09).
 """
 
+import secrets
 import threading
+import uuid
 from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from src.core.exceptions import MuitasTentativas, NaoAutenticado
+from src.core.exceptions import (
+    ConflitoConcorrencia,
+    MuitasTentativas,
+    NaoAutenticado,
+    RecursoNaoEncontrado,
+    ValidacaoDominio,
+)
 from src.core.security import HASH_ISCA, gerar_hash_senha, verificar_senha
-from src.modules.autenticacao.schemas import Perfil, UsuarioAutenticado
+from src.modules.autenticacao.schemas import CriarUsuarioRequest, Perfil, UsuarioAutenticado
 
 SENHA_PADRAO_SEED = "Unifap@2026"
 Relogio = Callable[[], datetime]
@@ -27,6 +35,12 @@ def _agora() -> datetime:
 class _RegistroUsuario:
     usuario: UsuarioAutenticado
     hash_senha: str
+
+
+@dataclass(frozen=True, slots=True)
+class _TokenRecuperacao:
+    usuario_id: str
+    expira_em: datetime
 
 
 def usuarios_seed() -> list[UsuarioAutenticado]:
@@ -46,21 +60,29 @@ def usuarios_seed() -> list[UsuarioAutenticado]:
         UsuarioAutenticado(id="u-ges-1", matricula="40000001", nome="Fábio Gestor",
                            email="fabio@unifap.br", perfil=Perfil.GESTOR, vinculo_ativo=True,
                            setor="PREFEITURA"),
+        UsuarioAutenticado(id="u-adm-1", matricula="50000001", nome="Administrador UNIFAP",
+                           email="admin@unifap.br", perfil=Perfil.ADMIN, vinculo_ativo=True,
+                           setor="NTI"),
     ]
 
 
 class InMemoryAuthAdapter:
     def __init__(self, usuarios: Sequence[UsuarioAutenticado] | None = None,
-                 senha_padrao: str = SENHA_PADRAO_SEED) -> None:
+                 senha_padrao: str = SENHA_PADRAO_SEED, relogio: Relogio = _agora) -> None:
         hash_padrao = gerar_hash_senha(senha_padrao)
+        self._relogio = relogio
+        self._lock = threading.RLock()
         self._por_matricula: dict[str, _RegistroUsuario] = {}
-        self._por_id: dict[str, UsuarioAutenticado] = {}
+        self._por_id: dict[str, _RegistroUsuario] = {}
+        self._tokens_recuperacao: dict[str, _TokenRecuperacao] = {}
         for u in usuarios if usuarios is not None else usuarios_seed():
-            self._por_matricula[u.matricula] = _RegistroUsuario(u, hash_padrao)
-            self._por_id[u.id] = u
+            reg = _RegistroUsuario(u, hash_padrao)
+            self._por_matricula[u.matricula] = reg
+            self._por_id[u.id] = reg
 
     def autenticar(self, matricula: str, senha: str) -> UsuarioAutenticado:
-        registro = self._por_matricula.get(matricula)
+        with self._lock:
+            registro = self._por_matricula.get(matricula)
         # V08: sempre executa Argon2 (hash isca) para não revelar matrículas pelo tempo.
         valido = verificar_senha(senha, registro.hash_senha if registro else HASH_ISCA)
         if registro is None or not valido:
@@ -68,10 +90,82 @@ class InMemoryAuthAdapter:
         return registro.usuario
 
     def obter_por_id(self, usuario_id: str) -> UsuarioAutenticado | None:
-        return self._por_id.get(usuario_id)
+        with self._lock:
+            reg = self._por_id.get(usuario_id)
+            return reg.usuario if reg is not None else None
 
     def listar_por_perfil(self, perfil: Perfil) -> Sequence[UsuarioAutenticado]:
-        return tuple(u for u in self._por_id.values() if u.perfil is perfil)
+        with self._lock:
+            return tuple(r.usuario for r in self._por_id.values() if r.usuario.perfil is perfil)
+
+    def listar_usuarios(self) -> Sequence[UsuarioAutenticado]:
+        with self._lock:
+            return tuple(r.usuario for r in self._por_id.values())
+
+    def criar_usuario(self, dados: CriarUsuarioRequest) -> UsuarioAutenticado:
+        email_norm = dados.email.lower()
+        with self._lock:
+            if dados.matricula in self._por_matricula:
+                raise ConflitoConcorrencia("Matrícula já cadastrada.")
+            if any(r.usuario.email.lower() == email_norm for r in self._por_id.values()):
+                raise ConflitoConcorrencia("E-mail já cadastrado.")
+            usuario = UsuarioAutenticado(
+                id=str(uuid.uuid4()),
+                matricula=dados.matricula,
+                nome=dados.nome,
+                email=email_norm,
+                perfil=dados.perfil,
+                vinculo_ativo=dados.vinculo_ativo,
+                setor=dados.setor,
+            )
+            reg = _RegistroUsuario(usuario, gerar_hash_senha(dados.senha))
+            self._por_matricula[usuario.matricula] = reg
+            self._por_id[usuario.id] = reg
+            return usuario
+
+    def redefinir_senha(self, usuario_id: str, nova_senha: str) -> None:
+        with self._lock:
+            reg = self._por_id.get(usuario_id)
+            if reg is None:
+                raise RecursoNaoEncontrado("Usuário não encontrado.")
+            novo = _RegistroUsuario(reg.usuario, gerar_hash_senha(nova_senha))
+            self._por_id[usuario_id] = novo
+            self._por_matricula[reg.usuario.matricula] = novo
+
+    def alterar_propria_senha(
+        self, usuario_id: str, senha_atual: str, nova_senha: str
+    ) -> None:
+        with self._lock:
+            reg = self._por_id.get(usuario_id)
+        if reg is None or not verificar_senha(senha_atual, reg.hash_senha):
+            raise NaoAutenticado("Senha atual incorreta.")
+        self.redefinir_senha(usuario_id, nova_senha)
+
+    def solicitar_recuperacao_senha(self, email: str) -> str | None:
+        email_norm = email.lower()
+        agora = self._relogio()
+        with self._lock:
+            for k in [k for k, v in self._tokens_recuperacao.items() if v.expira_em <= agora]:
+                del self._tokens_recuperacao[k]
+            alvo = next(
+                (r.usuario for r in self._por_id.values() if r.usuario.email.lower() == email_norm),
+                None,
+            )
+            if alvo is None or not alvo.vinculo_ativo:
+                return None
+            token = secrets.token_urlsafe(32)
+            self._tokens_recuperacao[token] = _TokenRecuperacao(
+                alvo.id, agora + timedelta(minutes=15)
+            )
+            return token
+
+    def confirmar_recuperacao_senha(self, token: str, nova_senha: str) -> None:
+        agora = self._relogio()
+        with self._lock:
+            registro = self._tokens_recuperacao.pop(token, None)
+        if registro is None or registro.expira_em <= agora:
+            raise ValidacaoDominio("Token de redefinição inválido ou expirado.")
+        self.redefinir_senha(registro.usuario_id, nova_senha)
 
 
 class InMemoryLimitadorTentativas:

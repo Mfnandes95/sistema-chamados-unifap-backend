@@ -84,6 +84,7 @@
             <div class="menu" role="menu">
               <div class="menu-head"><b>${esc(u.nome)}</b><span>${esc(u.ident)}, ${esc(u.tipo.toLowerCase())}</span>
                 <div class="roles">${u.perfis.map(UI.perfilChip).join('')}</div></div>
+              <button role="menuitem" type="button" data-changepw>${ic('key')}Alterar minha senha</button>
               <button role="menuitem" type="button" data-reset>${ic('restart_alt')}Restaurar dados de demonstração</button>
               <button role="menuitem" type="button" data-logout>${ic('logout')}Sair</button>
             </div>
@@ -178,7 +179,49 @@
     const nt = t.closest('[data-navtoggle]');
     if (nt) { setNav(!document.getElementById('nav').classList.contains('open'), e.detail === 0); return; }
     if (!t.closest('.navdrop')) setNav(false, false);
+    if (t.closest('[data-changepw]')) {
+      (async () => {
+        const fd = await UI.dialog({
+          title: 'Alterar minha senha',
+          body: `<p>Informe sua senha atual e escolha uma nova senha com pelo menos 8 caracteres.</p>
+            <div class="field"><label for="pw-atual">Senha atual</label><input class="input" id="pw-atual" name="atual" type="password" autocomplete="current-password"></div>
+            <div class="field"><label for="pw-nova">Nova senha</label><input class="input" id="pw-nova" name="nova" type="password" autocomplete="new-password"></div>`,
+          confirm: 'Alterar senha',
+          validate: (f, form) => {
+            const a = f.get('atual'), n = f.get('nova');
+            const ea = form.querySelector('#pw-atual'), en = form.querySelector('#pw-nova');
+            const m1 = a.length < 8 ? 'Informe sua senha atual (mínimo 8 caracteres).' : '';
+            const m2 = n.length < 8 ? 'A nova senha precisa ter pelo menos 8 caracteres.' : '';
+            UI.fieldError(ea, m1); UI.fieldError(en, m2);
+            if (m1) ea.focus(); else if (m2) en.focus();
+            return m1 || m2;
+          }
+        });
+        if (!fd) return;
+        const tok = (() => { try { return sessionStorage.getItem('unifap-api-jwt') || ''; } catch (err) { return ''; } })();
+        try {
+          const r = await fetch('/api/v1/auth/alterar-senha', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tok },
+            body: JSON.stringify({ senha_atual: fd.get('atual'), nova_senha: fd.get('nova') })
+          });
+          if (!r.ok) {
+            const d = await r.json().catch(() => ({}));
+            return UI.toast(d.mensagem || 'Não foi possível alterar a senha.', 'err');
+          }
+          UI.toast('Senha alterada com sucesso.');
+        } catch (err) {
+          UI.toast('Erro de conexão ao alterar senha.', 'err');
+        }
+      })();
+      return;
+    }
     if (t.closest('[data-logout]')) {
+      const tok = (() => { try { return sessionStorage.getItem('unifap-api-jwt') || ''; } catch (err) { return ''; } })();
+      if (tok) {
+        fetch('/api/v1/auth/logout', { method: 'POST', headers: { Authorization: 'Bearer ' + tok } }).catch(() => {});
+        try { sessionStorage.removeItem('unifap-api-jwt'); } catch (err) { /* ok */ }
+      }
       DB.s.sessao = null; DB.save();
       location.hash = '#/login';
       return;

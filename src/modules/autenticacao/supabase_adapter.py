@@ -1,18 +1,42 @@
-"""Adaptador Supabase para IAutenticadorInstitucional (lê a tabela `perfis`)."""
+"""Adaptador Supabase para IAutenticadorInstitucional (Supabase Auth + `public.perfis`)."""
 
+import secrets
+import threading
 from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from src.core.exceptions import NaoAutenticado
+from src.core.exceptions import (
+    ConflitoConcorrencia,
+    NaoAutenticado,
+    RecursoNaoEncontrado,
+    ValidacaoDominio,
+)
 from src.core.security import HASH_ISCA, gerar_hash_senha, verificar_senha
 from src.core.supabase_client import SupabaseClient
-from src.modules.autenticacao.schemas import Perfil, UsuarioAutenticado
+from src.modules.autenticacao.schemas import CriarUsuarioRequest, Perfil, UsuarioAutenticado
 from src.modules.autenticacao.service import SENHA_PADRAO_SEED
+
+_PERFIL_PARA_PAPEIS_DB: dict[Perfil, list[str]] = {
+    Perfil.ADMIN: ["admin", "gestor", "solicitante"],
+    Perfil.GESTOR: ["gestor", "solicitante"],
+    Perfil.EXECUTOR: ["executor", "solicitante"],
+    Perfil.SOLICITANTE: ["solicitante"],
+}
+
+
+@dataclass(frozen=True, slots=True)
+class _TokenRecuperacao:
+    usuario_id: str
+    expira_em: datetime
 
 
 def _escolher_perfil(papeis: Sequence[str]) -> Perfil:
     baixos = {p.lower() for p in papeis}
-    if "gestor" in baixos or "admin" in baixos or "reitoria" in baixos:
+    if "admin" in baixos:
+        return Perfil.ADMIN
+    if "gestor" in baixos or "reitoria" in baixos:
         return Perfil.GESTOR
     if "executor" in baixos:
         return Perfil.EXECUTOR
@@ -34,7 +58,7 @@ def _para_usuario(row: dict[str, Any]) -> UsuarioAutenticado:
 
 
 class SupabaseAuthAdapter:
-    """Cumpre IAutenticadorInstitucional consultando `public.perfis` no Supabase."""
+    """Cumpre IAutenticadorInstitucional via Supabase Auth + `public.perfis`."""
 
     def __init__(
         self,
@@ -48,6 +72,18 @@ class SupabaseAuthAdapter:
         self._permitir_senha_demo = permitir_senha_demo
         self._publishable_key = publishable_key
         self._hash_padrao = gerar_hash_senha(senha_padrao)
+        self._lock = threading.RLock()
+        self._tokens_recuperacao: dict[str, _TokenRecuperacao] = {}
+
+    def _validar_credenciais(self, row: dict[str, Any], senha: str) -> bool:
+        # Primeiro valida contra a senha real no Supabase Auth (se publishable_key disponível).
+        if self._publishable_key and self._client.verificar_senha_auth(
+            str(row["email"]), senha, self._publishable_key
+        ):
+            return True
+        if self._permitir_senha_demo:
+            return verificar_senha(senha, self._hash_padrao)
+        return False
 
     def autenticar(self, matricula: str, senha: str) -> UsuarioAutenticado:
         linhas = self._client.select(
@@ -55,19 +91,10 @@ class SupabaseAuthAdapter:
             {"select": "*", "matricula_siape": f"eq.{matricula}", "limit": "1"},
         )
         encontrado = linhas[0] if linhas else None
-        if self._permitir_senha_demo:
-            # V08: mantém custo Argon2 constante mesmo se a matrícula não existir.
-            valido = verificar_senha(senha, self._hash_padrao if encontrado else HASH_ISCA)
-        else:
-            # V20: em produção, valida contra Supabase Auth real (nunca aceita senha demo).
-            if encontrado is None or not self._publishable_key:
-                verificar_senha(senha, HASH_ISCA)
-                valido = False
-            else:
-                valido = self._client.verificar_senha_auth(
-                    str(encontrado["email"]), senha, self._publishable_key
-                )
-        if encontrado is None or not valido:
+        if encontrado is None:
+            verificar_senha(senha, HASH_ISCA)  # V08
+            raise NaoAutenticado("Matrícula ou senha inválidas.")
+        if not self._validar_credenciais(encontrado, senha):
             raise NaoAutenticado("Matrícula ou senha inválidas.")
         return _para_usuario(encontrado)
 
@@ -80,3 +107,76 @@ class SupabaseAuthAdapter:
     def listar_por_perfil(self, perfil: Perfil) -> Sequence[UsuarioAutenticado]:
         linhas = self._client.select("perfis", {"select": "*"})
         return tuple(u for row in linhas if (u := _para_usuario(row)).perfil is perfil)
+
+    def listar_usuarios(self) -> Sequence[UsuarioAutenticado]:
+        linhas = self._client.select("perfis", {"select": "*", "order": "nome.asc"})
+        return tuple(_para_usuario(row) for row in linhas)
+
+    def criar_usuario(self, dados: CriarUsuarioRequest) -> UsuarioAutenticado:
+        existentes = self._client.select(
+            "perfis",
+            {"select": "id", "matricula_siape": f"eq.{dados.matricula}", "limit": "1"},
+        )
+        if existentes:
+            raise ConflitoConcorrencia("Matrícula já cadastrada.")
+
+        usuario_id = self._client.criar_usuario_auth(dados.email.lower(), dados.senha)
+        try:
+            inserido = self._client.insert("perfis", {
+                "id": usuario_id,
+                "nome": dados.nome,
+                "email": dados.email.lower(),
+                "matricula_siape": dados.matricula,
+                "vinculo": dados.vinculo,
+                "vinculo_ativo": dados.vinculo_ativo,
+                "acesso_local_ativo": True,
+                "perfis": _PERFIL_PARA_PAPEIS_DB[dados.perfil],
+                "setor_id": dados.setor,
+            })
+        except BaseException:
+            self._client.deletar_usuario_auth(usuario_id)
+            raise
+        return _para_usuario(inserido)
+
+    def redefinir_senha(self, usuario_id: str, nova_senha: str) -> None:
+        if self.obter_por_id(usuario_id) is None:
+            raise RecursoNaoEncontrado("Usuário não encontrado.")
+        self._client.atualizar_senha_auth(usuario_id, nova_senha)
+
+    def alterar_propria_senha(
+        self, usuario_id: str, senha_atual: str, nova_senha: str
+    ) -> None:
+        linhas = self._client.select(
+            "perfis", {"select": "*", "id": f"eq.{usuario_id}", "limit": "1"}
+        )
+        if not linhas or not self._validar_credenciais(linhas[0], senha_atual):
+            raise NaoAutenticado("Senha atual incorreta.")
+        self._client.atualizar_senha_auth(usuario_id, nova_senha)
+
+    def solicitar_recuperacao_senha(self, email: str) -> str | None:
+        email_norm = email.lower()
+        linhas = self._client.select(
+            "perfis", {"select": "*", "email": f"eq.{email_norm}", "limit": "1"}
+        )
+        if not linhas:
+            return None
+        usuario = _para_usuario(linhas[0])
+        if not usuario.vinculo_ativo:
+            return None
+        if self._publishable_key:
+            self._client.solicitar_recuperacao_auth(email_norm, self._publishable_key)
+        agora = datetime.now(UTC)
+        token = secrets.token_urlsafe(32)
+        with self._lock:
+            self._tokens_recuperacao[token] = _TokenRecuperacao(
+                usuario.id, agora + timedelta(minutes=15)
+            )
+        return token
+
+    def confirmar_recuperacao_senha(self, token: str, nova_senha: str) -> None:
+        agora = datetime.now(UTC)
+        with self._lock:
+            reg = self._tokens_recuperacao.pop(token, None)
+        if reg is None or reg.expira_em <= agora:
+            raise ValidacaoDominio("Token de redefinição inválido ou expirado.")
+        self.redefinir_senha(reg.usuario_id, nova_senha)

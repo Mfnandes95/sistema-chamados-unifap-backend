@@ -3,7 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Query, Response
 
 from src.core.container import ContainerDep
-from src.modules.autenticacao.dependencies import Gestor
+from src.modules.autenticacao.dependencies import GestorOuAdmin
 from src.modules.relatorios.interfaces import (
     FiltroRelatorioDTO,
     FormatoExportacao,
@@ -18,13 +18,13 @@ router = APIRouter(prefix="/api/v1/relatorios", tags=["relatórios"])
 
 
 @router.get("/historico", response_model=RelatorioHistoricoDTO)
-def historico(_: Gestor, c: ContainerDep,
+def historico(_: GestorOuAdmin, c: ContainerDep,
               filtro: Annotated[FiltroRelatorioDTO, Query()]) -> RelatorioHistoricoDTO:
     return c.relatorios.gerar_historico(filtro)
 
 
 @router.get("/exportar")
-def exportar(_: Gestor, c: ContainerDep,
+def exportar(_: GestorOuAdmin, c: ContainerDep,
              q: Annotated[FiltroExportacaoDTO, Query()]) -> Response:
     filtro = FiltroRelatorioDTO.model_validate(q.model_dump(exclude={"formato"}))
     arquivo = c.relatorios.exportar(filtro, q.formato)

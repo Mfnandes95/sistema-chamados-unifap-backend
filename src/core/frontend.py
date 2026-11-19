@@ -135,25 +135,12 @@ BRIDGE_JS = r"""/* Ponte não-invasiva entre window.DB (frontend) e a API FastAP
   }
 
   async function autenticarSessao(userId) {
-    if (!userId) {
-      if (getToken()) {
-        await api('POST', '/auth/logout');
-        setToken('');
-      }
-      return;
-    }
+    if (!userId || !getToken()) return;
     await detectarModo();
-    const u = DB.user(userId);
-    const matricula = matriculaParaUsuario(u);
-    if (!matricula) return;
-    const r = await api('POST', '/auth/login', { matricula, senha: SENHA_SEED });
-    if (r.ok && r.data && r.data.access_token) {
-      setToken(r.data.access_token);
-      const rl = await api('GET', '/catalogo/locais');
-      if (rl.ok && Array.isArray(rl.data)) catalogoLocais = rl.data;
-      const rc = await api('GET', '/catalogo/categorias');
-      if (rc.ok && Array.isArray(rc.data)) catalogoCategorias = rc.data;
-    }
+    const rl = await api('GET', '/catalogo/locais');
+    if (rl.ok && Array.isArray(rl.data)) catalogoLocais = rl.data;
+    const rc = await api('GET', '/catalogo/categorias');
+    if (rc.ok && Array.isArray(rc.data)) catalogoCategorias = rc.data;
   }
 
   async function sincronizarNovoChamado(c) {

@@ -386,3 +386,79 @@ def test_isolamento_modular_parnas_sem_imports_concretos_entre_modulos() -> None
 
     assert violacoes == [], f"Violações de isolamento modular: {violacoes}"
 
+
+# ---------------------------------------------------------------------- ADMIN & Redefinição de Senha
+async def test_admin_cria_usuario_redefine_senha_e_acompanha_chamados(
+    client: AsyncClient, tokens: H, container: Container
+) -> None:
+    # Não-admin não pode criar nem listar usuários
+    novo_payload = {
+        "matricula": "20249999",
+        "nome": "Joao Novo Discente",
+        "email": "joao.novo@unifap.br",
+        "senha": "SenhaInicial@1",
+        "perfil": "SOLICITANTE",
+        "vinculo": "discente",
+    }
+    assert (await client.post("/api/v1/usuarios", json=novo_payload,
+                              headers=tokens["gestor"])).status_code == 403
+    assert (await client.get("/api/v1/usuarios", headers=tokens["solicitante"])).status_code == 403
+
+    # Admin cria usuário e lista usuários
+    r_cria = await client.post("/api/v1/usuarios", json=novo_payload, headers=tokens["admin"])
+    assert r_cria.status_code == 201, r_cria.text
+    novo_id = r_cria.json()["id"]
+    r_lista = await client.get("/api/v1/usuarios", headers=tokens["admin"])
+    assert r_lista.status_code == 200 and any(u["id"] == novo_id for u in r_lista.json())
+
+    # Novo usuário faz login com a senha inicial e abre um chamado
+    r_log1 = await client.post("/api/v1/auth/login",
+                               json={"matricula": "20249999", "senha": "SenhaInicial@1"})
+    assert r_log1.status_code == 200
+    h_novo = {"Authorization": f"Bearer {r_log1.json()['access_token']}"}
+    r_ch = await client.post("/api/v1/chamados", json=CHAMADO_VALIDO, headers=h_novo)
+    assert r_ch.status_code == 201
+    protocolo = r_ch.json()["protocolo"]
+
+    # Admin consegue verificar o andamento do chamado, histórico e relatórios
+    assert (await client.get(f"/api/v1/chamados/{protocolo}",
+                             headers=tokens["admin"])).status_code == 200
+    assert (await client.get(f"/api/v1/chamados/{protocolo}/historico",
+                             headers=tokens["admin"])).status_code == 200
+    assert (await client.get("/api/v1/relatorios/historico",
+                             headers=tokens["admin"])).status_code == 200
+
+    # Admin redefine a senha manualmente
+    r_red = await client.post(f"/api/v1/usuarios/{novo_id}/redefinir-senha",
+                              json={"nova_senha": "SenhaAdmin@2026"}, headers=tokens["admin"])
+    assert r_red.status_code == 204
+    assert (await client.post("/api/v1/auth/login",
+                              json={"matricula": "20249999", "senha": "SenhaInicial@1"})).status_code == 401
+    r_log2 = await client.post("/api/v1/auth/login",
+                               json={"matricula": "20249999", "senha": "SenhaAdmin@2026"})
+    assert r_log2.status_code == 200
+    h_novo2 = {"Authorization": f"Bearer {r_log2.json()['access_token']}"}
+
+    # Próprio usuário altera sua senha autenticado
+    r_alt = await client.post(
+        "/api/v1/auth/alterar-senha",
+        json={"senha_atual": "SenhaAdmin@2026", "nova_senha": "SenhaPropria@2026"},
+        headers=h_novo2,
+    )
+    assert r_alt.status_code == 204
+    assert (await client.post("/api/v1/auth/login",
+                              json={"matricula": "20249999", "senha": "SenhaPropria@2026"})).status_code == 200
+
+    # Autoatendimento "esqueci a senha" (token de uso único)
+    r_esq = await client.post("/api/v1/auth/esqueci-senha", json={"email": "joao.novo@unifap.br"})
+    assert r_esq.status_code == 200
+    tok_rec = container.autenticador.solicitar_recuperacao_senha("joao.novo@unifap.br")
+    assert tok_rec is not None
+    assert (await client.post("/api/v1/auth/redefinir-senha",
+                              json={"token": tok_rec, "nova_senha": "SenhaRecuperada@2026"})).status_code == 204
+    # Reuso do mesmo token falha (uso único)
+    assert (await client.post("/api/v1/auth/redefinir-senha",
+                              json={"token": tok_rec, "nova_senha": "OutraSenha@2026"})).status_code == 422
+    assert (await client.post("/api/v1/auth/login",
+                              json={"matricula": "20249999", "senha": "SenhaRecuperada@2026"})).status_code == 200
+
