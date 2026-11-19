@@ -85,7 +85,6 @@
               <div class="menu-head"><b>${esc(u.nome)}</b><span>${esc(u.ident)}, ${esc(u.tipo.toLowerCase())}</span>
                 <div class="roles">${u.perfis.map(UI.perfilChip).join('')}</div></div>
               <button role="menuitem" type="button" data-changepw>${ic('key')}Alterar minha senha</button>
-              <button role="menuitem" type="button" data-reset>${ic('restart_alt')}Restaurar dados de demonstração</button>
               <button role="menuitem" type="button" data-logout>${ic('logout')}Sair</button>
             </div>
           </div>

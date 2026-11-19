@@ -224,14 +224,6 @@
   /* =========================================================
      T01 — Login
      ========================================================= */
-  const DEMO = [
-    ['2021001234', 'Rafael Costa', 'Solicitante'],
-    ['1765432', 'Ana Paula Souza', 'Gestão e triagem'],
-    ['1987654', 'Joana Ribeiro', 'Executora, manutenção predial'],
-    ['1654321', 'Marcos Almeida', 'Reitoria, só consulta'],
-    ['1543210', 'Lúcia Ferreira', 'Administração do sistema'],
-    ['2019004321', 'Carla Menezes', 'Vínculo inativo, acesso negado']
-  ];
   Screens.login = {
     render() {
       const exp = /expirou/.test(location.hash);
@@ -264,14 +256,6 @@
               </div>
               <button class="btn btn-primary btn-lg btn-block" type="submit" data-submit>Entrar</button>
             </form>
-            <div class="auth-or" role="separator"><span>ou</span></div>
-            <button class="btn btn-secondary btn-lg btn-block" type="button" data-demotoggle aria-expanded="false" aria-controls="demo-list">${ic('switch_account')}Usar conta de demonstração</button>
-            <div class="auth-demo" id="demo-list" hidden>
-              <p>Protótipo com dados simulados. Escolha uma pessoa para entrar com o perfil dela.</p>
-              <ul>${DEMO.map(([id, n, r]) => `<li><button type="button" data-demo="${id}">
-                <span class="avatar">${fmt.iniciais(n)}</span><span class="who"><b>${esc(n)}</b><span>${esc(r)}</span></span>${ic('arrow_forward')}
-              </button></li>`).join('')}</ul>
-            </div>
           </div>
           <p class="auth-foot">Problemas para entrar? Procure o Núcleo de Tecnologia da Informação da UNIFAP.</p>
         </main>
@@ -295,18 +279,6 @@
         b.setAttribute('aria-pressed', show); b.setAttribute('aria-label', show ? 'Ocultar senha' : 'Mostrar senha');
         b.innerHTML = ic(show ? 'visibility_off' : 'visibility');
       });
-      const tg = $(root, '[data-demotoggle]'), list = $(root, '#demo-list');
-      tg.addEventListener('click', () => {
-        const open = list.hidden;
-        list.hidden = !open; tg.setAttribute('aria-expanded', open);
-        if (open) list.querySelector('button').focus();
-      });
-      $$(root, '[data-demo]').forEach(b => b.addEventListener('click', () => {
-        ident.value = b.dataset.demo; senha.value = 'Unifap@2026';
-        fieldError(ident, ''); fieldError(senha, '');
-        list.hidden = true; tg.setAttribute('aria-expanded', 'false');
-        form.requestSubmit();
-      }));
       $(root, '[data-forgot]').addEventListener('click', async () => {
         const fd = await dialog({
           title: 'Redefinir senha',

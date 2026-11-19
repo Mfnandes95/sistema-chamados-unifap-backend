@@ -201,22 +201,15 @@ BRIDGE_JS = r"""/* Ponte não-invasiva entre window.DB (frontend) e a API FastAP
       if (DB.can('admin')) {
         const ru = await api('GET', '/usuarios');
         if (ru.ok && Array.isArray(ru.data)) {
-          for (const u of ru.data) {
-            const ex = DB.user(u.id);
-            if (!ex) {
-              DB.s.usuarios.push({
-                id: u.id, nome: u.nome, login: u.matricula, ident: u.matricula, email: u.email,
-                tipo: u.perfil === 'SOLICITANTE' ? 'Discente' : 'Servidor',
-                vinculoAtivo: u.vinculo_ativo, acessoAtivo: u.vinculo_ativo,
-                perfis: u.perfil === 'ADMIN' ? ['admin', 'gestor', 'solicitante']
-                  : u.perfil === 'GESTOR' ? ['gestor', 'solicitante']
-                  : u.perfil === 'EXECUTOR' ? ['executor', 'solicitante'] : ['solicitante'],
-                setor: u.setor || ''
-              });
-            } else {
-              ex.nome = u.nome; ex.login = u.matricula; ex.ident = u.matricula;
-            }
-          }
+          DB.s.usuarios = ru.data.map(u => ({
+            id: u.id, nome: u.nome, login: u.matricula, ident: u.matricula, email: u.email,
+            tipo: u.perfil === 'SOLICITANTE' ? 'Discente' : 'Servidor',
+            vinculoAtivo: u.vinculo_ativo, acessoAtivo: u.vinculo_ativo,
+            perfis: u.perfil === 'ADMIN' ? ['admin', 'gestor', 'solicitante']
+              : u.perfil === 'GESTOR' ? ['gestor', 'solicitante']
+              : u.perfil === 'EXECUTOR' ? ['executor', 'solicitante'] : ['solicitante'],
+            setor: u.setor || ''
+          }));
         }
       }
 
@@ -224,7 +217,7 @@ BRIDGE_JS = r"""/* Ponte não-invasiva entre window.DB (frontend) e a API FastAP
       if (!rl.ok || !Array.isArray(rl.data) || escritasEmAndamento > 0) return;
 
       const mapa = loadMap();
-      let mudou = false;
+      const reais = [];
 
       for (const resumo of rl.data) {
         if (escritasEmAndamento > 0) return;
@@ -258,7 +251,7 @@ BRIDGE_JS = r"""/* Ponte não-invasiva entre window.DB (frontend) e a API FastAP
 
         const catFront = categoriaParaFront(d.categoria_id);
         const catObj = DB.cat(catFront);
-        const convertido = {
+        reais.push({
           id: proto,
           categoria: catFront,
           ambiente: ambienteParaFront(d.local_id),
@@ -278,32 +271,15 @@ BRIDGE_JS = r"""/* Ponte não-invasiva entre window.DB (frontend) e a API FastAP
           })),
           avaliacao: d.avaliacao ? { nota: d.avaliacao.nota, comentario: d.avaliacao.comentario || '' } : undefined,
           historico: historicoFront
-        };
-
+        });
         mapa[proto] = proto;
-        // Remove eventual cópia local temporária com ID antigo que apontava para este protocolo
-        const idTemp = Object.keys(mapa).find(k => k !== proto && mapa[k] === proto);
-        if (idTemp) {
-          const idxTemp = DB.s.chamados.findIndex(x => x.id === idTemp);
-          if (idxTemp >= 0) { DB.s.chamados.splice(idxTemp, 1); mudou = true; }
-        }
-
-        const idx = DB.s.chamados.findIndex(x => x.id === proto);
-        if (idx >= 0) {
-          const prevStr = JSON.stringify(DB.s.chamados[idx]);
-          if (prevStr !== JSON.stringify(convertido)) {
-            DB.s.chamados[idx] = convertido;
-            mudou = true;
-          }
-        } else {
-          DB.s.chamados.unshift(convertido);
-          mudou = true;
-        }
       }
 
       if (escritasEmAndamento > 0) return;
       saveMap(mapa);
+      const mudou = JSON.stringify(DB.s.chamados) !== JSON.stringify(reais);
       if (mudou) {
+        DB.s.chamados = reais;
         originalSave();
         anterior = snapshot();
         if (window.App && App.render) App.render();
