@@ -33,8 +33,8 @@ class ServicoTriagem:
 
     def atribuir(self, protocolo: str, dados: AtribuicaoDTO,
                  ator: UsuarioAutenticado) -> Chamado:
-        if ator.perfil is not Perfil.GESTOR:
-            raise AcessoNegado("RN04: somente o Gestor atribui chamados.")
+        if ator.perfil not in (Perfil.GESTOR, Perfil.ADMIN):
+            raise AcessoNegado("RN04: somente o Gestor ou Administrador atribui chamados.")
         if not ator.vinculo_ativo:
             raise AcessoNegado("RN02: vínculo institucional inativo.")
         executor = self._autenticador.obter_por_id(dados.executor_id)

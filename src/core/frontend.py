@@ -97,6 +97,9 @@ BRIDGE_JS = r"""/* Ponte não-invasiva entre window.DB (frontend) e a API FastAP
   }
 
   function executorIdApi(uId) {
+    if (uId && /^[0-9a-f-]{32,36}$/i.test(uId)) return uId;
+    const exeReal = DB.s.usuarios.find(u => u.perfis.includes('executor') && /^[0-9a-f-]{32,36}$/i.test(u.id));
+    if (exeReal) return exeReal.id;
     const u = uId && DB.user(uId);
     if (u && (u.setor || '').toLowerCase().includes('tecnologia')) return 'u-exe-2';
     return 'u-exe-1';
@@ -372,10 +375,15 @@ BRIDGE_JS = r"""/* Ponte não-invasiva entre window.DB (frontend) e a API FastAP
     if (antes.estado !== depois.estado) {
       if (depois.estado === 'atribuido') {
         const obsEv = depois.historico.slice(antes.historico.length).find(h => h.publico === false);
-        await api('POST', '/triagem/' + protocolo + '/atribuir', {
+        const rAt = await api('POST', '/triagem/' + protocolo + '/atribuir', {
           executor_id: executorIdApi(depois.executor),
           observacao: obsEv ? obsEv.texto : null
         });
+        if (!rAt.ok && window.UI && UI.toast) {
+          UI.toast((rAt.data && rAt.data.mensagem) || 'Falha ao salvar atribuição no servidor.', 'err');
+        } else {
+          await carregarChamadosDoBackend();
+        }
       } else if (depois.estado === 'atendimento') {
         await api('POST', '/chamados/' + protocolo + '/iniciar');
       } else if (depois.estado === 'resolvido') {

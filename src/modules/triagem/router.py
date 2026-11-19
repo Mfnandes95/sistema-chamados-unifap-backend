@@ -3,7 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Path, Query
 
 from src.core.container import ContainerDep, agendar_notificacoes
-from src.modules.autenticacao.dependencies import EquipeTecnica, Executor, Gestor
+from src.modules.autenticacao.dependencies import EquipeTecnica, Executor, GestorOuAdmin
 from src.modules.chamados.schemas import PROTOCOLO_REGEX, ChamadoResumoResponse
 from src.modules.triagem.schemas import AtribuicaoDTO, FiltroFilaDTO, ReencaminhamentoDTO
 
@@ -20,7 +20,7 @@ def fila(ator: EquipeTecnica, c: ContainerDep,
 
 
 @router.post("/{protocolo}/atribuir", response_model=ChamadoResumoResponse)
-def atribuir(protocolo: ProtocoloPath, dados: AtribuicaoDTO, ator: Gestor,
+def atribuir(protocolo: ProtocoloPath, dados: AtribuicaoDTO, ator: GestorOuAdmin,
              c: ContainerDep) -> ChamadoResumoResponse:
     return ChamadoResumoResponse.model_validate(c.triagem.atribuir(protocolo, dados, ator))
 

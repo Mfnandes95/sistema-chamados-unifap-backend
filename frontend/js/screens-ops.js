@@ -211,7 +211,7 @@
       Shared.bindCommon(root, c);
       const eq = $(root, '#equipe'), ex = $(root, '#executor');
       const fillEx = () => {
-        const list = DB.s.usuarios.filter(u => u.perfis.includes('executor') && u.setor === eq.value && u.acessoAtivo);
+        const list = DB.s.usuarios.filter(u => u.perfis.includes('executor') && u.acessoAtivo && (!u.setor || u.setor === eq.value));
         ex.innerHTML = `<option value="">Toda a equipe</option>` + list.map(u => `<option value="${u.id}">${esc(u.nome)}</option>`).join('');
       };
       fillEx(); eq.addEventListener('change', fillEx);
