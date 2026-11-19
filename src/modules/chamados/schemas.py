@@ -13,7 +13,7 @@ from src.modules.chamados.domain.entities import (
     StatusChamado,
 )
 
-PROTOCOLO_REGEX = r"^UNIFAP-\d{4}(0[1-9]|1[0-2])-\d{6}$"
+PROTOCOLO_REGEX = r"^(UNIFAP-\d{4}(0[1-9]|1[0-2])-\d{6}|\d{4}-\d{6})$"
 Codigo = Annotated[str, StringConstraints(pattern=r"^[A-Z0-9_\-]{2,40}$")]
 
 

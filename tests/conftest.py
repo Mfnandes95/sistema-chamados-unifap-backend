@@ -32,12 +32,18 @@ CHAMADO_VALIDO = {
 
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
-    return Settings(upload_dir=tmp_path / "uploads", max_upload_bytes=1024 * 64)
+    return Settings(
+        upload_dir=tmp_path / "uploads",
+        max_upload_bytes=1024 * 64,
+        supabase_url=None,
+        supabase_secret_key=None,
+    )
 
 
 @pytest.fixture
 def container(settings: Settings) -> Container:
-    return montar_container(settings)
+    instancia, _ = montar_container(settings)
+    return instancia
 
 
 @pytest.fixture

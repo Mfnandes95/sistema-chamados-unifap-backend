@@ -38,37 +38,54 @@ H = dict[str, dict[str, str]]
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
 
 
-# ---------------------------------------------------------------------- V01 / V15 / V16
-def test_v01_v16_producao_exige_segredo_e_proibe_cors_coringa() -> None:
+# ---------------------------------------------------------------------- V01 / V15 / V16 / V20 / V21 / V23
+def test_v01_v16_v20_v23_producao_hardening_settings() -> None:
     with pytest.raises(ValidationError):
-        Settings(ambiente="producao", jwt_secret=SEGREDO_DESENVOLVIMENTO)
+        Settings(ambiente="producao", jwt_secret=SEGREDO_DESENVOLVIMENTO, permitir_senha_demo=False)
     with pytest.raises(ValidationError):
-        Settings(ambiente="producao", jwt_secret="a" * 40, cors_origins=["*"])
-    ok = Settings(ambiente="producao", jwt_secret="a" * 40, cors_origins=["https://unifap.br"])
+        Settings(ambiente="producao", jwt_secret="a" * 40, cors_origins=["*"], permitir_senha_demo=False)
+    # V20: proíbe senha demo em produção
+    with pytest.raises(ValidationError):
+        Settings(ambiente="producao", jwt_secret="a" * 40, cors_origins=["https://unifap.br"],
+                 permitir_senha_demo=True)
+    # V23: exige HTTPS no Supabase em produção
+    with pytest.raises(ValidationError):
+        Settings(ambiente="producao", jwt_secret="a" * 40, cors_origins=["https://unifap.br"],
+                 permitir_senha_demo=False, supabase_url="http://inseguro.local",
+                 supabase_secret_key="sb_secret_test")
+    ok = Settings(ambiente="producao", jwt_secret="a" * 40, cors_origins=["https://unifap.br"],
+                  permitir_senha_demo=False, supabase_url=None, supabase_secret_key=None)
     assert ok.producao is True
 
 
-async def test_v15_cabecalhos_seguranca_e_docs_desabilitados_em_producao(tmp_path: Path) -> None:
+async def test_v15_v21_cabecalhos_seguranca_docs_e_bridge_desabilitados_em_producao(tmp_path: Path) -> None:
     s = Settings(ambiente="producao", jwt_secret="x" * 40,
-                 cors_origins=["https://unifap.br"], upload_dir=tmp_path / "u")
+                 cors_origins=["https://unifap.br"], upload_dir=tmp_path / "u",
+                 permitir_senha_demo=False, supabase_url=None, supabase_secret_key=None)
     app_prod = criar_app(s)
     async with AsyncClient(transport=ASGITransport(app=app_prod), base_url="http://test") as c:
         r = await c.get("/health")
         assert r.status_code == 200
+        assert r.json() == {"status": "ok"}  # V24: não expõe detalhes internos em produção
         assert r.headers["x-content-type-options"] == "nosniff"
         assert r.headers["x-frame-options"] == "DENY"
         assert r.headers["cache-control"] == "no-store"
         assert "strict-transport-security" in r.headers
         assert (await c.get("/docs")).status_code == 404
         assert (await c.get("/openapi.json")).status_code == 404
-        r_raiz = await c.get("/")
-        assert r_raiz.status_code == 200 and "docs" not in r_raiz.json()
+        r_info = await c.get("/api/v1/info")
+        assert r_info.status_code == 200 and "docs" not in r_info.json()
+        # V21: em produção, frontend não injeta /bridge.js com senha demo
+        r_front = await c.get("/")
+        assert r_front.status_code == 200 and "/bridge.js" not in r_front.text
+        assert (await c.get("/bridge.js")).status_code == 404
+        assert (await c.get("/js/app.js")).status_code == 200
 
 
 # ---------------------------------------------------------------------- V02 / V14
 async def test_v02_rate_limit_login_e_v14_nao_ecoa_senha(tmp_path: Path) -> None:
     s = Settings(upload_dir=tmp_path / "u", login_max_tentativas_conta=3,
-                 login_max_tentativas_ip=10)
+                 login_max_tentativas_ip=10, supabase_url=None, supabase_secret_key=None)
     app_rl = criar_app(s)
     async with AsyncClient(transport=ASGITransport(app=app_rl), base_url="http://test") as c:
         # V14: senha curta dispara 422 mas NÃO é refletida na resposta
@@ -139,7 +156,8 @@ def test_f04_abertura_bloqueia_nao_solicitante_no_dominio() -> None:
 
 # ---------------------------------------------------------------------- V04
 async def test_v04_teto_corpo_json_e_multipart(tmp_path: Path) -> None:
-    s = Settings(upload_dir=tmp_path / "u", max_corpo_bytes=2048, max_upload_bytes=1024)
+    s = Settings(upload_dir=tmp_path / "u", max_corpo_bytes=2048, max_upload_bytes=1024,
+                 supabase_url=None, supabase_secret_key=None)
     app_lim = criar_app(s)
     async with AsyncClient(transport=ASGITransport(app=app_lim), base_url="http://test") as c:
         r_big = await c.post("/api/v1/auth/login", content=b"{" + b" " * 4096 + b"}",
@@ -240,8 +258,10 @@ def test_v12_csv_formula_injection_e_v19_pdf_escape() -> None:
 
 # ---------------------------------------------------------------------- V13 / F03
 async def test_v13_paginacao_limite_evidencias_e_f03_fila_oculta_encerrados(tmp_path: Path) -> None:
-    s = Settings(upload_dir=tmp_path / "u", max_evidencias_por_chamado=2)
-    c_inst: Container = montar_container(s)
+    s = Settings(upload_dir=tmp_path / "u", max_evidencias_por_chamado=2,
+                 supabase_url=None, supabase_secret_key=None)
+    c_inst: Container
+    c_inst, _ = montar_container(s)
     app_p = criar_app(s, c_inst)
     async with AsyncClient(transport=ASGITransport(app=app_p), base_url="http://test") as c:
         r_sol = await c.post("/api/v1/auth/login",

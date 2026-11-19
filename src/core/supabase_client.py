@@ -1,0 +1,112 @@
+"""Cliente HTTP leve para a Data API (PostgREST) e Auth API do Supabase."""
+
+from typing import Any, cast
+
+import httpx
+
+from src.core.exceptions import ConflitoConcorrencia, ErroDominio, log_app
+
+
+class ErroPersistenciaSupabase(ErroDominio):
+    status_code = 502
+    codigo = "ERRO_PERSISTENCIA"
+
+
+class SupabaseClient:
+    """Wrapper fino sobre httpx.Client com chave secret (exclusivo do backend)."""
+
+    def __init__(self, url: str, secret_key: str, timeout: float = 15.0) -> None:
+        self._root_url = url.rstrip("/")
+        self._base_url = self._root_url + "/rest/v1"
+        self._headers = {
+            "apikey": secret_key,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        self._http = httpx.Client(
+            base_url=self._base_url,
+            headers=self._headers,
+            timeout=timeout,
+        )
+
+    def close(self) -> None:
+        self._http.close()
+
+    def healthcheck(self) -> bool:
+        try:
+            r = self._http.get("/campi", params={"select": "id", "limit": "1"})
+            return r.status_code in (200, 206)
+        except httpx.HTTPError:
+            return False
+
+    def verificar_senha_auth(self, email: str, senha: str, api_key: str) -> bool:
+        """Valida credenciais contra Supabase Auth (GoTrue) em produção (V20)."""
+        try:
+            r = httpx.post(
+                f"{self._root_url}/auth/v1/token",
+                params={"grant_type": "password"},
+                headers={"apikey": api_key, "Content-Type": "application/json"},
+                json={"email": email, "password": senha},
+                timeout=10.0,
+            )
+            return r.status_code == 200
+        except httpx.HTTPError as exc:
+            log_app.error("Falha ao contatar Supabase Auth: %s", exc)
+            return False
+
+    def select(self, tabela: str, params: dict[str, str] | None = None) -> list[dict[str, Any]]:
+        r = self._request("GET", f"/{tabela}", params=params)
+        dados = r.json()
+        if not isinstance(dados, list):
+            raise ErroPersistenciaSupabase("Erro ao consultar serviço de persistência.")
+        return cast(list[dict[str, Any]], dados)
+
+    def insert(self, tabela: str, payload: dict[str, Any]) -> dict[str, Any]:
+        r = self._request(
+            "POST",
+            f"/{tabela}",
+            json=payload,
+            headers={"Prefer": "return=representation"},
+        )
+        dados = r.json()
+        if isinstance(dados, list) and dados:
+            return cast(dict[str, Any], dados[0])
+        if isinstance(dados, dict):
+            return cast(dict[str, Any], dados)
+        raise ErroPersistenciaSupabase("Erro ao gravar no serviço de persistência.")
+
+    def update(self, tabela: str, filtros: dict[str, str],
+               payload: dict[str, Any]) -> list[dict[str, Any]]:
+        r = self._request(
+            "PATCH",
+            f"/{tabela}",
+            params=filtros,
+            json=payload,
+            headers={"Prefer": "return=representation"},
+        )
+        dados = r.json()
+        if isinstance(dados, list):
+            return cast(list[dict[str, Any]], dados)
+        return []
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, str] | None = None,
+        json: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> httpx.Response:
+        try:
+            r = self._http.request(method, path, params=params, json=json, headers=headers)
+        except httpx.HTTPError as exc:
+            log_app.error("Falha de rede Supabase %s %s: %s", method, path, exc)
+            raise ErroPersistenciaSupabase("Serviço de persistência temporariamente indisponível.") from exc
+        if r.status_code == 409:
+            raise ConflitoConcorrencia("Conflito de integridade/concorrência no banco de dados.")
+        if r.status_code >= 400:
+            # V22: loga detalhes internamente e devolve mensagem genérica ao cliente.
+            log_app.error("Erro Supabase (%s) em %s %s: %s", r.status_code, method, path, r.text[:300])
+            raise ErroPersistenciaSupabase("Erro ao comunicar com o serviço de persistência.")
+        return r

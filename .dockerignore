@@ -1,0 +1,13 @@
+.venv/
+.git/
+frontend/.git/
+.env
+.mypy_cache/
+.pytest_cache/
+.benchmarks/
+.vscode/
+__pycache__/
+*.py[cod]
+*.egg-info/
+tests/
+uploads/

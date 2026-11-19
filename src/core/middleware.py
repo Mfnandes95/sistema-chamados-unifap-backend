@@ -4,6 +4,17 @@ from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 _PREFIXOS_DOCS = ("/docs", "/redoc", "/openapi.json")
+_PREFIXOS_FRONTEND = ("/css/", "/js/", "/assets/", "/bridge.js")
+_CSP_API = "default-src 'none'; frame-ancestors 'none'"
+_CSP_FRONTEND = (
+    "default-src 'self'; "
+    "script-src 'self'; "
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+    "font-src 'self' https://fonts.gstatic.com; "
+    "img-src 'self' data:; "
+    "connect-src 'self'; "
+    "frame-ancestors 'none'"
+)
 
 
 class CabecalhosSegurancaMiddleware:
@@ -15,7 +26,9 @@ class CabecalhosSegurancaMiddleware:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        eh_docs = str(scope.get("path", "")).startswith(_PREFIXOS_DOCS)
+        caminho = str(scope.get("path", ""))
+        eh_docs = caminho.startswith(_PREFIXOS_DOCS)
+        eh_frontend = caminho in ("/", "/index.html") or caminho.startswith(_PREFIXOS_FRONTEND)
 
         async def enviar(message: Message) -> None:
             if message["type"] == "http.response.start":
@@ -25,9 +38,10 @@ class CabecalhosSegurancaMiddleware:
                 h.setdefault("Referrer-Policy", "no-referrer")
                 h.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
                 h.setdefault("Cross-Origin-Opener-Policy", "same-origin")
-                if not eh_docs:  # Swagger UI carrega assets de CDN
-                    h.setdefault("Content-Security-Policy",
-                                 "default-src 'none'; frame-ancestors 'none'")
+                if eh_frontend:
+                    h.setdefault("Content-Security-Policy", _CSP_FRONTEND)
+                elif not eh_docs:  # Swagger UI carrega assets de CDN
+                    h.setdefault("Content-Security-Policy", _CSP_API)
                     h.setdefault("Cache-Control", "no-store")
                 if self.hsts:
                     h.setdefault("Strict-Transport-Security",

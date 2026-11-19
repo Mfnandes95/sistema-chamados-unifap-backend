@@ -24,10 +24,11 @@ class Settings(BaseSettings):
     jwt_audience: str = "unifap-chamados-api"
     jwt_expire_minutes: int = Field(default=60, ge=1, le=1440)
 
-    # --- Proteção contra força bruta (V02)
+    # --- Proteção contra força bruta (V02, V24)
     login_max_tentativas_conta: int = Field(default=5, ge=1)
     login_max_tentativas_ip: int = Field(default=20, ge=1)
     login_janela_minutos: int = Field(default=15, ge=1)
+    confiar_proxy_headers: bool = False
 
     # --- HTTP (V04, V16)
     cors_origins: list[str] = ["http://localhost:5173"]
@@ -43,9 +44,19 @@ class Settings(BaseSettings):
     max_reaberturas: int = Field(default=3, ge=0)
     intervalo_manutencao_segundos: int = Field(default=300, ge=5)
 
+    # --- Persistência Supabase (opcional; sem ela usa adaptadores InMemory)
+    supabase_url: str | None = None
+    supabase_key: str | None = None
+    supabase_secret_key: str | None = None
+    permitir_senha_demo: bool = True
+
     @property
     def producao(self) -> bool:
         return self.ambiente == "producao"
+
+    @property
+    def usar_supabase(self) -> bool:
+        return bool(self.supabase_url and self.supabase_secret_key)
 
     @model_validator(mode="after")
     def _validar_producao(self) -> "Settings":
@@ -54,6 +65,10 @@ class Settings(BaseSettings):
                 raise ValueError("UNIFAP_JWT_SECRET precisa ser definido em produção.")
             if "*" in self.cors_origins:
                 raise ValueError("CORS com '*' não é permitido em produção.")
+            if self.permitir_senha_demo:  # V20
+                raise ValueError("UNIFAP_PERMITIR_SENHA_DEMO deve ser false em produção.")
+            if self.usar_supabase and self.supabase_url and not self.supabase_url.startswith("https://"):
+                raise ValueError("UNIFAP_SUPABASE_URL deve usar HTTPS em produção.")  # V23
         return self
 
 

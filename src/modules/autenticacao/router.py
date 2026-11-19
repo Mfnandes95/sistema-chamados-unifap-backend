@@ -9,10 +9,19 @@ from src.modules.autenticacao.schemas import LoginRequest, TokenResponse, Usuari
 router = APIRouter(prefix="/api/v1/auth", tags=["autenticação"])
 
 
+def _ip_cliente(request: Request, confiar_proxy: bool) -> str:
+    """V24: lê X-Forwarded-For somente quando atrás de proxy reverso confiável."""
+    if confiar_proxy:
+        xff = request.headers.get("x-forwarded-for", "")
+        if xff:
+            return xff.split(",")[0].strip() or "desconhecido"
+    return request.client.host if request.client else "desconhecido"
+
+
 @router.post("/login", response_model=TokenResponse)
 def login(dados: LoginRequest, request: Request, container: ContainerDep) -> TokenResponse:
     s = container.settings
-    ip = request.client.host if request.client else "desconhecido"
+    ip = _ip_cliente(request, s.confiar_proxy_headers)
     chave_conta, chave_ip = f"conta:{dados.matricula}", f"ip:{ip}"
     limitador = container.limitador_login
     limitador.verificar(chave_conta, s.login_max_tentativas_conta)
