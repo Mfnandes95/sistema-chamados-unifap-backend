@@ -134,6 +134,178 @@ BRIDGE_JS = r"""/* Ponte não-invasiva entre window.DB (frontend) e a API FastAP
     return { ok: res.ok, status: res.status, data };
   }
 
+  const STATUS_API_PARA_FRONT = {
+    ABERTO: 'triagem',
+    ATRIBUIDO: 'atribuido',
+    EM_ATENDIMENTO: 'atendimento',
+    RESOLVIDO: 'resolvido',
+    REABERTO: 'reencaminhado',
+    FECHADO: 'concluido',
+    CANCELADO: 'cancelado'
+  };
+
+  const PRIO_API_PARA_FRONT = {
+    BAIXA: 'baixa',
+    MEDIA: 'media',
+    ALTA: 'alta',
+    CRITICA: 'alta'
+  };
+
+  function categoriaParaFront(catApi) {
+    const s = String(catApi || '').toUpperCase();
+    if (s.includes('ELETRIC')) return 'eletrica';
+    if (s.includes('REFRIG') || s.includes('CLIMAT')) return 'refrig';
+    if (s.includes('TECNOLOGIA') || s === 'TI') return 'ti';
+    if (s.includes('LIMPEZA')) return 'limpeza';
+    return 'predial';
+  }
+
+  function ambienteParaFront(localApiId) {
+    const s = String(localApiId || '').toUpperCase();
+    if (s.includes('204')) return 'mz-b-2-x1';
+    if (s.includes('LAB1')) return 'mz-c-1-x1';
+    if (s.includes('LAB2')) return 'mz-c-1-x1';
+    if (s.includes('LABQ')) return 'mz-c-0-x1';
+    if (s.includes('AUD')) return 'mz-a-0-x1';
+    return (DB.s.ambientes[0] && DB.s.ambientes[0].id) || 'mz-b-2-x1';
+  }
+
+  function garantirUsuarioLocal(id, nomeFallback) {
+    if (!id) return;
+    if (!DB.user(id)) {
+      DB.s.usuarios.push({
+        id,
+        nome: nomeFallback || 'Usuário UNIFAP',
+        login: id.slice(0, 8),
+        ident: id.slice(0, 8),
+        tipo: 'Discente',
+        vinculoAtivo: true,
+        acessoAtivo: true,
+        perfis: ['solicitante'],
+        setor: ''
+      });
+    }
+  }
+
+  let sincronizando = false;
+
+  async function carregarChamadosDoBackend() {
+    if (!getToken() || sincronizando) return;
+    sincronizando = true;
+    try {
+      // Se for admin, garante nomes reais dos usuários antes de renderizar os chamados
+      const ru = await api('GET', '/usuarios');
+      if (ru.ok && Array.isArray(ru.data)) {
+        for (const u of ru.data) {
+          const ex = DB.user(u.id);
+          if (!ex) {
+            DB.s.usuarios.push({
+              id: u.id, nome: u.nome, login: u.matricula, ident: u.matricula, email: u.email,
+              tipo: u.perfil === 'SOLICITANTE' ? 'Discente' : 'Servidor',
+              vinculoAtivo: u.vinculo_ativo, acessoAtivo: u.vinculo_ativo,
+              perfis: u.perfil === 'ADMIN' ? ['admin', 'gestor', 'solicitante']
+                : u.perfil === 'GESTOR' ? ['gestor', 'solicitante']
+                : u.perfil === 'EXECUTOR' ? ['executor', 'solicitante'] : ['solicitante'],
+              setor: u.setor || ''
+            });
+          } else {
+            ex.nome = u.nome; ex.login = u.matricula; ex.ident = u.matricula;
+          }
+        }
+      }
+
+      const rl = await api('GET', '/chamados?limite=100');
+      if (!rl.ok || !Array.isArray(rl.data)) return;
+
+      const mapa = loadMap();
+      let mudou = false;
+
+      for (const resumo of rl.data) {
+        const proto = resumo.protocolo;
+        const rd = await api('GET', '/chamados/' + encodeURIComponent(proto));
+        if (!rd.ok || !rd.data) continue;
+        const d = rd.data;
+        const rh = await api('GET', '/chamados/' + encodeURIComponent(proto) + '/historico');
+        const histApi = rh.ok && Array.isArray(rh.data) ? rh.data : [];
+
+        garantirUsuarioLocal(d.solicitante_id, 'Solicitante');
+        if (d.executor_id) garantirUsuarioLocal(d.executor_id, 'Executor');
+
+        const historicoFront = histApi.map(h => {
+          garantirUsuarioLocal(h.ator_id, 'Equipe');
+          return {
+            em: h.registrado_em,
+            autor: h.ator_id,
+            tipo: h.acao === 'AVALIACAO_FECHAMENTO' ? 'avaliacao'
+              : h.acao.includes('COMENTARIO') ? 'comentario' : 'estado',
+            texto: h.detalhe ? `${h.acao}: ${h.detalhe}` : h.acao,
+            publico: !h.acao.includes('INTERNO') && h.acao !== 'OBSERVACAO_ATRIBUICAO'
+          };
+        });
+        if (!historicoFront.length) {
+          historicoFront.push({
+            em: d.criado_em, autor: d.solicitante_id, tipo: 'estado',
+            texto: 'Chamado registrado no sistema.', publico: true
+          });
+        }
+
+        const catFront = categoriaParaFront(d.categoria_id);
+        const catObj = DB.cat(catFront);
+        const convertido = {
+          id: proto,
+          categoria: catFront,
+          ambiente: ambienteParaFront(d.local_id),
+          autor: d.solicitante_id,
+          impedeAula: !!d.impacta_aulas,
+          prioridade: PRIO_API_PARA_FRONT[d.prioridade] || 'media',
+          estado: STATUS_API_PARA_FRONT[d.status] || 'triagem',
+          descricao: d.descricao || d.titulo,
+          criadoEm: d.criado_em,
+          equipe: d.executor_id && catObj ? catObj.setor : '',
+          executor: d.executor_id || '',
+          anexos: (d.evidencias || []).map(e => ({
+            nome: e.nome_arquivo,
+            tipo: (e.content_type || '').startsWith('video') ? 'video' : 'image',
+            tamanho: +(e.tamanho_bytes / 1048576).toFixed(1) || 0.1
+          })),
+          avaliacao: d.avaliacao ? { nota: d.avaliacao.nota, comentario: d.avaliacao.comentario || '' } : undefined,
+          historico: historicoFront
+        };
+
+        mapa[proto] = proto;
+        // Remove eventual cópia local temporária com ID antigo que apontava para este protocolo
+        const idTemp = Object.keys(mapa).find(k => k !== proto && mapa[k] === proto);
+        if (idTemp) {
+          const idxTemp = DB.s.chamados.findIndex(x => x.id === idTemp);
+          if (idxTemp >= 0) { DB.s.chamados.splice(idxTemp, 1); mudou = true; }
+        }
+
+        const idx = DB.s.chamados.findIndex(x => x.id === proto);
+        if (idx >= 0) {
+          const prevStr = JSON.stringify(DB.s.chamados[idx]);
+          if (prevStr !== JSON.stringify(convertido)) {
+            DB.s.chamados[idx] = convertido;
+            mudou = true;
+          }
+        } else {
+          DB.s.chamados.unshift(convertido);
+          mudou = true;
+        }
+      }
+
+      saveMap(mapa);
+      if (mudou) {
+        originalSave();
+        anterior = snapshot();
+        if (window.App && App.render) App.render();
+      }
+    } catch (err) {
+      console.warn('[UNIFAP Bridge sync]', err);
+    } finally {
+      sincronizando = false;
+    }
+  }
+
   async function autenticarSessao(userId) {
     if (!userId || !getToken()) return;
     await detectarModo();
@@ -141,6 +313,7 @@ BRIDGE_JS = r"""/* Ponte não-invasiva entre window.DB (frontend) e a API FastAP
     if (rl.ok && Array.isArray(rl.data)) catalogoLocais = rl.data;
     const rc = await api('GET', '/catalogo/categorias');
     if (rc.ok && Array.isArray(rc.data)) catalogoCategorias = rc.data;
+    await carregarChamadosDoBackend();
   }
 
   async function sincronizarNovoChamado(c) {
@@ -261,13 +434,22 @@ BRIDGE_JS = r"""/* Ponte não-invasiva entre window.DB (frontend) e a API FastAP
     })();
   };
 
-  if (DB.s.sessao && !getToken()) {
+  if (DB.s.sessao && getToken()) {
     autenticarSessao(DB.s.sessao).catch(() => {});
   }
+  window.addEventListener('hashchange', () => {
+    if (DB.s.sessao && getToken()) carregarChamadosDoBackend().catch(() => {});
+  });
+  setInterval(() => {
+    if (DB.s.sessao && getToken() && !document.hidden) {
+      carregarChamadosDoBackend().catch(() => {});
+    }
+  }, 15000);
 
   window.UnifapApi = {
     get token() { return getToken(); },
     get protocolos() { return loadMap(); },
+    sincronizar: carregarChamadosDoBackend,
     ultimo: null,
     api
   };
