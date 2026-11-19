@@ -89,8 +89,8 @@ class SupabaseClient:
         dados = r.json()
         return str(dados["id"])
 
-    def obter_flag_redefinir_senha_auth(self, usuario_id: str) -> bool:
-        """Lê `app_metadata.deve_redefinir_senha` no Supabase Auth (não editável pelo usuário)."""
+    def obter_app_metadata_auth(self, usuario_id: str) -> dict[str, Any]:
+        """Lê `app_metadata` do usuário no Supabase Auth (não editável pelo usuário)."""
         try:
             r = httpx.get(
                 f"{self._root_url}/auth/v1/admin/users/{usuario_id}",
@@ -98,11 +98,11 @@ class SupabaseClient:
                 timeout=10.0,
             )
             if r.status_code != 200:
-                return False
-            app_meta = r.json().get("app_metadata") or {}
-            return bool(app_meta.get("deve_redefinir_senha", False))
+                return {}
+            meta = r.json().get("app_metadata")
+            return cast(dict[str, Any], meta) if isinstance(meta, dict) else {}
         except httpx.HTTPError:
-            return False
+            return {}
 
     def deletar_usuario_auth(self, usuario_id: str) -> None:
         try:
@@ -115,16 +115,24 @@ class SupabaseClient:
             log_app.error("Falha ao reverter usuário no Supabase Auth: %s", exc)
 
     def atualizar_senha_auth(
-        self, usuario_id: str, nova_senha: str, *, deve_redefinir_senha: bool = False
+        self,
+        usuario_id: str,
+        nova_senha: str,
+        *,
+        deve_redefinir_senha: bool = False,
+        senha_alterada: bool = False,
     ) -> None:
-        """Atualiza a senha e a flag `app_metadata.deve_redefinir_senha` no Supabase Auth."""
+        """Atualiza a senha e o `app_metadata` no Supabase Auth."""
         try:
             r = httpx.put(
                 f"{self._root_url}/auth/v1/admin/users/{usuario_id}",
                 headers=self._auth_admin_headers(),
                 json={
                     "password": nova_senha,
-                    "app_metadata": {"deve_redefinir_senha": deve_redefinir_senha},
+                    "app_metadata": {
+                        "deve_redefinir_senha": deve_redefinir_senha,
+                        "senha_alterada": senha_alterada,
+                    },
                 },
                 timeout=15.0,
             )

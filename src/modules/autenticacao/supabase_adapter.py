@@ -76,13 +76,16 @@ class SupabaseAuthAdapter:
         self._lock = threading.RLock()
         self._tokens_recuperacao: dict[str, _TokenRecuperacao] = {}
 
-    def _validar_credenciais(self, row: dict[str, Any], senha: str) -> bool:
+    def _validar_credenciais(
+        self, row: dict[str, Any], senha: str, *, ja_alterou_senha: bool = False
+    ) -> bool:
         # Primeiro valida contra a senha real no Supabase Auth (se publishable_key disponível).
         if self._publishable_key and self._client.verificar_senha_auth(
             str(row["email"]), senha, self._publishable_key
         ):
             return True
-        if self._permitir_senha_demo:
+        # Após o usuário definir sua própria senha, não aceita mais a senha padrão demo.
+        if self._permitir_senha_demo and not ja_alterou_senha:
             return verificar_senha(senha, self._hash_padrao)
         return False
 
@@ -95,9 +98,11 @@ class SupabaseAuthAdapter:
         if encontrado is None:
             verificar_senha(senha, HASH_ISCA)  # V08
             raise NaoAutenticado("Matrícula ou senha inválidas.")
-        if not self._validar_credenciais(encontrado, senha):
+        meta = self._client.obter_app_metadata_auth(str(encontrado["id"]))
+        ja_alterou = bool(meta.get("senha_alterada", False))
+        if not self._validar_credenciais(encontrado, senha, ja_alterou_senha=ja_alterou):
             raise NaoAutenticado("Matrícula ou senha inválidas.")
-        deve_trocar = self._client.obter_flag_redefinir_senha_auth(str(encontrado["id"]))
+        deve_trocar = bool(meta.get("deve_redefinir_senha", False))
         return _para_usuario(encontrado, deve_redefinir_senha=deve_trocar)
 
     def obter_por_id(self, usuario_id: str) -> UsuarioAutenticado | None:
@@ -106,8 +111,8 @@ class SupabaseAuthAdapter:
         )
         if not linhas:
             return None
-        deve_trocar = self._client.obter_flag_redefinir_senha_auth(usuario_id)
-        return _para_usuario(linhas[0], deve_redefinir_senha=deve_trocar)
+        meta = self._client.obter_app_metadata_auth(usuario_id)
+        return _para_usuario(linhas[0], deve_redefinir_senha=bool(meta.get("deve_redefinir_senha", False)))
 
     def listar_por_perfil(self, perfil: Perfil) -> Sequence[UsuarioAutenticado]:
         linhas = self._client.select("perfis", {"select": "*"})
@@ -169,7 +174,9 @@ class SupabaseAuthAdapter:
             matricula=str(linhas[0]["matricula_siape"]),
             nome=str(linhas[0]["nome"]),
         )
-        self._client.atualizar_senha_auth(usuario_id, nova_senha, deve_redefinir_senha=False)
+        self._client.atualizar_senha_auth(
+            usuario_id, nova_senha, deve_redefinir_senha=False, senha_alterada=True
+        )
 
     def solicitar_recuperacao_senha(self, email: str) -> str | None:
         email_norm = email.lower()

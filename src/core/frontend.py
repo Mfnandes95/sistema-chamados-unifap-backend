@@ -191,39 +191,43 @@ BRIDGE_JS = r"""/* Ponte não-invasiva entre window.DB (frontend) e a API FastAP
   }
 
   let sincronizando = false;
+  let escritasEmAndamento = 0;
 
   async function carregarChamadosDoBackend() {
-    if (!getToken() || sincronizando) return;
+    if (!getToken() || sincronizando || escritasEmAndamento > 0) return;
     sincronizando = true;
     try {
-      // Se for admin, garante nomes reais dos usuários antes de renderizar os chamados
-      const ru = await api('GET', '/usuarios');
-      if (ru.ok && Array.isArray(ru.data)) {
-        for (const u of ru.data) {
-          const ex = DB.user(u.id);
-          if (!ex) {
-            DB.s.usuarios.push({
-              id: u.id, nome: u.nome, login: u.matricula, ident: u.matricula, email: u.email,
-              tipo: u.perfil === 'SOLICITANTE' ? 'Discente' : 'Servidor',
-              vinculoAtivo: u.vinculo_ativo, acessoAtivo: u.vinculo_ativo,
-              perfis: u.perfil === 'ADMIN' ? ['admin', 'gestor', 'solicitante']
-                : u.perfil === 'GESTOR' ? ['gestor', 'solicitante']
-                : u.perfil === 'EXECUTOR' ? ['executor', 'solicitante'] : ['solicitante'],
-              setor: u.setor || ''
-            });
-          } else {
-            ex.nome = u.nome; ex.login = u.matricula; ex.ident = u.matricula;
+      // Só consulta /usuarios quando o perfil atual for admin (evita 403 desnecessários)
+      if (DB.can('admin')) {
+        const ru = await api('GET', '/usuarios');
+        if (ru.ok && Array.isArray(ru.data)) {
+          for (const u of ru.data) {
+            const ex = DB.user(u.id);
+            if (!ex) {
+              DB.s.usuarios.push({
+                id: u.id, nome: u.nome, login: u.matricula, ident: u.matricula, email: u.email,
+                tipo: u.perfil === 'SOLICITANTE' ? 'Discente' : 'Servidor',
+                vinculoAtivo: u.vinculo_ativo, acessoAtivo: u.vinculo_ativo,
+                perfis: u.perfil === 'ADMIN' ? ['admin', 'gestor', 'solicitante']
+                  : u.perfil === 'GESTOR' ? ['gestor', 'solicitante']
+                  : u.perfil === 'EXECUTOR' ? ['executor', 'solicitante'] : ['solicitante'],
+                setor: u.setor || ''
+              });
+            } else {
+              ex.nome = u.nome; ex.login = u.matricula; ex.ident = u.matricula;
+            }
           }
         }
       }
 
       const rl = await api('GET', '/chamados?limite=100');
-      if (!rl.ok || !Array.isArray(rl.data)) return;
+      if (!rl.ok || !Array.isArray(rl.data) || escritasEmAndamento > 0) return;
 
       const mapa = loadMap();
       let mudou = false;
 
       for (const resumo of rl.data) {
+        if (escritasEmAndamento > 0) return;
         const proto = resumo.protocolo;
         const rd = await api('GET', '/chamados/' + encodeURIComponent(proto));
         if (!rd.ok || !rd.data) continue;
@@ -297,6 +301,7 @@ BRIDGE_JS = r"""/* Ponte não-invasiva entre window.DB (frontend) e a API FastAP
         }
       }
 
+      if (escritasEmAndamento > 0) return;
       saveMap(mapa);
       if (mudou) {
         originalSave();
@@ -390,11 +395,18 @@ BRIDGE_JS = r"""/* Ponte não-invasiva entre window.DB (frontend) e a API FastAP
         const sol = depois.historico.slice(antes.historico.length).find(h => h.tipo === 'comentario');
         const texto = sol && sol.texto.length >= 10 ? sol.texto : 'Atendimento concluído pela equipe técnica.';
         await api('POST', '/chamados/' + protocolo + '/resolver', { solucao: texto });
-      } else if (depois.estado === 'concluido' && depois.avaliacao) {
-        await api('POST', '/chamados/' + protocolo + '/avaliacao', {
-          nota: depois.avaliacao.nota,
-          comentario: depois.avaliacao.comentario || null
+      } else if (depois.estado === 'concluido') {
+        const nota = depois.avaliacao && depois.avaliacao.nota ? depois.avaliacao.nota : 5;
+        const com = depois.avaliacao && depois.avaliacao.comentario
+          ? depois.avaliacao.comentario
+          : (!depois.avaliacao ? 'Concluído pelo solicitante sem nota.' : null);
+        const rAv = await api('POST', '/chamados/' + protocolo + '/avaliacao', {
+          nota,
+          comentario: com
         });
+        if (!rAv.ok && window.UI && UI.toast) {
+          UI.toast((rAv.data && rAv.data.mensagem) || 'Não foi possível registrar a avaliação no servidor.', 'err');
+        }
       } else if (depois.estado === 'reencaminhado') {
         await api('POST', '/triagem/' + protocolo + '/reencaminhar', {
           motivo: 'Reencaminhado pela equipe técnica para nova triagem.'
@@ -445,21 +457,31 @@ BRIDGE_JS = r"""/* Ponte não-invasiva entre window.DB (frontend) e a API FastAP
     anterior = atual;
 
     (async () => {
+      escritasEmAndamento += 1;
       try {
         if (prev.sessao !== atual.sessao) {
           await autenticarSessao(atual.sessao);
         }
         const prevById = new Map(prev.chamados.map(c => [c.id, c]));
+        let houveMutacao = false;
         for (const c of DB.s.chamados) {
           const antes = prevById.get(c.id);
           if (!antes) {
             await sincronizarNovoChamado(c);
+            houveMutacao = true;
           } else if (antes.estado !== c.estado || antes.historicoLen !== c.historico.length) {
             await sincronizarAlteracao(antes, c);
+            houveMutacao = true;
           }
+        }
+        if (houveMutacao) {
+          escritasEmAndamento -= 1;
+          try { await carregarChamadosDoBackend(); } finally { escritasEmAndamento += 1; }
         }
       } catch (err) {
         console.warn('[UNIFAP Bridge]', err);
+      } finally {
+        escritasEmAndamento = Math.max(0, escritasEmAndamento - 1);
       }
     })();
   };
