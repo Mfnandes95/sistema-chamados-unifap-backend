@@ -1,6 +1,8 @@
 """Hashing Argon2 (pwdlib) e emissão/decodificação de JWT (PyJWT)."""
 
+import re
 import secrets
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -11,7 +13,7 @@ from pwdlib import PasswordHash
 from pwdlib.hashers.argon2 import Argon2Hasher
 
 from src.core.config import Settings
-from src.core.exceptions import NaoAutenticado
+from src.core.exceptions import NaoAutenticado, ValidacaoDominio
 
 _hasher = PasswordHash((Argon2Hasher(),))
 _EMISSOR = "unifap-chamados"
@@ -30,6 +32,29 @@ def verificar_senha(senha: str, hash_senha: str) -> bool:
 
 # V08: hash "isca" usado quando a matrícula não existe, igualando o custo da resposta.
 HASH_ISCA = gerar_hash_senha(secrets.token_urlsafe(32))
+
+
+def _normalizar_ascii(texto: str) -> str:
+    return unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode("ascii").lower()
+
+
+def validar_forca_senha(senha: str, *, matricula: str, nome: str) -> None:
+    """Política de senha forte: >=10 chars, maiúscula, minúscula, especial, sem matrícula/nome."""
+    if len(senha) < 10:
+        raise ValidacaoDominio("A nova senha deve ter no mínimo 10 caracteres.")
+    if not re.search(r"[A-Z]", senha):
+        raise ValidacaoDominio("A nova senha deve conter pelo menos uma letra maiúscula.")
+    if not re.search(r"[a-z]", senha):
+        raise ValidacaoDominio("A nova senha deve conter pelo menos uma letra minúscula.")
+    if not re.search(r"[^A-Za-z0-9\s]", senha):
+        raise ValidacaoDominio("A nova senha deve conter pelo menos um caractere especial.")
+    senha_norm = _normalizar_ascii(senha)
+    mat_limpa = re.sub(r"\D", "", matricula)
+    if mat_limpa and mat_limpa in senha_norm:
+        raise ValidacaoDominio("A nova senha não pode conter o número de matrícula.")
+    for parte in re.findall(r"[a-z]{3,}", _normalizar_ascii(nome)):
+        if parte in senha_norm:
+            raise ValidacaoDominio("A nova senha não pode conter o seu próprio nome.")
 
 
 @dataclass(frozen=True, slots=True)

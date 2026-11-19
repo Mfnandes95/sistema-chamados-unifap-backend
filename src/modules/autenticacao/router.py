@@ -20,6 +20,7 @@ from src.modules.autenticacao.schemas import (
     TokenResponse,
     UsuarioAutenticado,
 )
+from src.modules.autenticacao.service import SENHA_PADRAO_SEED
 
 router = APIRouter(tags=["autenticação e usuários"])
 
@@ -54,6 +55,7 @@ def login(dados: LoginRequest, request: Request, container: ContainerDep) -> Tok
         expira_em_segundos=s.jwt_expire_minutes * 60,
         perfil=usuario.perfil,
         deve_redefinir_senha=usuario.deve_redefinir_senha,
+        usando_senha_padrao=(dados.senha == SENHA_PADRAO_SEED),
     )
 
 

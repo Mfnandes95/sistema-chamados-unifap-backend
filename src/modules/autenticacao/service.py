@@ -20,7 +20,7 @@ from src.core.exceptions import (
     RecursoNaoEncontrado,
     ValidacaoDominio,
 )
-from src.core.security import HASH_ISCA, gerar_hash_senha, verificar_senha
+from src.core.security import HASH_ISCA, gerar_hash_senha, validar_forca_senha, verificar_senha
 from src.modules.autenticacao.schemas import CriarUsuarioRequest, Perfil, UsuarioAutenticado
 
 SENHA_PADRAO_SEED = "Unifap@2026"
@@ -147,6 +147,7 @@ class InMemoryAuthAdapter:
             reg = self._por_id.get(usuario_id)
         if reg is None or not verificar_senha(senha_atual, reg.hash_senha):
             raise NaoAutenticado("Senha atual incorreta.")
+        validar_forca_senha(nova_senha, matricula=reg.usuario.matricula, nome=reg.usuario.nome)
         self.redefinir_senha(usuario_id, nova_senha, deve_redefinir_senha=False)
 
     def solicitar_recuperacao_senha(self, email: str) -> str | None:
@@ -173,6 +174,9 @@ class InMemoryAuthAdapter:
             registro = self._tokens_recuperacao.pop(token, None)
         if registro is None or registro.expira_em <= agora:
             raise ValidacaoDominio("Token de redefinição inválido ou expirado.")
+        alvo = self.obter_por_id(registro.usuario_id)
+        if alvo is not None:
+            validar_forca_senha(nova_senha, matricula=alvo.matricula, nome=alvo.nome)
         self.redefinir_senha(registro.usuario_id, nova_senha)
 
 

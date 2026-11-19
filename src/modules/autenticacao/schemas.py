@@ -26,6 +26,7 @@ class TokenResponse(BaseModel):
     expira_em_segundos: int
     perfil: Perfil
     deve_redefinir_senha: bool = False
+    usando_senha_padrao: bool = False
 
 
 class UsuarioAutenticado(BaseModel):
@@ -60,7 +61,7 @@ class RedefinirSenhaAdminRequest(_Entrada):
 
 class AlterarPropriaSenhaRequest(_Entrada):
     senha_atual: str = Field(min_length=8, max_length=128)
-    nova_senha: str = Field(min_length=8, max_length=128)
+    nova_senha: str = Field(min_length=10, max_length=128)
 
 
 class EsqueciSenhaRequest(_Entrada):
@@ -69,7 +70,7 @@ class EsqueciSenhaRequest(_Entrada):
 
 class ConfirmarRedefinicaoSenhaRequest(_Entrada):
     token: str = Field(min_length=16, max_length=256)
-    nova_senha: str = Field(min_length=8, max_length=128)
+    nova_senha: str = Field(min_length=10, max_length=128)
 
 
 class MensagemResponse(BaseModel):

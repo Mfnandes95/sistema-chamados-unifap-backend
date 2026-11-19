@@ -456,18 +456,40 @@ async def test_admin_cria_usuario_redefine_senha_e_acompanha_chamados(
         headers=h_novo2,
     )).status_code == 422
 
+    # Rejeita senhas fracas (curta, sem maiúscula, sem minúscula, sem especial, com matrícula ou com próprio nome)
+    for senha_fraca in (
+        "Curta@1a",               # < 10 chars
+        "todasminusculas@1",      # sem maiúscula
+        "TODASMAIUSCULAS@1",      # sem minúscula
+        "SemEspecial1234",        # sem especial
+        "Abc@20249999x",          # contém matrícula
+        "Abc@JoaoSilva1",         # contém próprio nome ("joao")
+    ):
+        r_fraca = await client.post(
+            "/api/v1/auth/alterar-senha",
+            json={"senha_atual": "SenhaAdmin@2026", "nova_senha": senha_fraca},
+            headers=h_novo2,
+        )
+        assert r_fraca.status_code == 422, (senha_fraca, r_fraca.status_code)
+
     # Próprio usuário altera sua senha autenticado → limpa a flag e libera o acesso
     r_alt = await client.post(
         "/api/v1/auth/alterar-senha",
-        json={"senha_atual": "SenhaAdmin@2026", "nova_senha": "SenhaPropria@2026"},
+        json={"senha_atual": "SenhaAdmin@2026", "nova_senha": "ChaveForte#2026"},
         headers=h_novo2,
     )
     assert r_alt.status_code == 204
     assert (await client.post("/api/v1/chamados", json=CHAMADO_VALIDO,
                               headers=h_novo2)).status_code == 201
     r_log3 = await client.post("/api/v1/auth/login",
-                               json={"matricula": "20249999", "senha": "SenhaPropria@2026"})
+                               json={"matricula": "20249999", "senha": "ChaveForte#2026"})
     assert r_log3.status_code == 200 and r_log3.json()["deve_redefinir_senha"] is False
+    assert r_log3.json()["usando_senha_padrao"] is False
+
+    # Login com senha padrão sinaliza usando_senha_padrao=True para abrir o pop-up no frontend
+    r_padrao = await client.post("/api/v1/auth/login",
+                                 json={"matricula": "20230001", "senha": SENHA_PADRAO_SEED})
+    assert r_padrao.status_code == 200 and r_padrao.json()["usando_senha_padrao"] is True
 
     # Autoatendimento "esqueci a senha" (token de uso único)
     r_esq = await client.post("/api/v1/auth/esqueci-senha", json={"email": "joao.novo@unifap.br"})

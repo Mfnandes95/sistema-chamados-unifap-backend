@@ -181,17 +181,29 @@
     if (!t.closest('.navdrop')) setNav(false, false);
     if (t.closest('[data-changepw]')) {
       (async () => {
+        const u = me();
         const fd = await UI.dialog({
           title: 'Alterar minha senha',
-          body: `<p>Informe sua senha atual e escolha uma nova senha com pelo menos 8 caracteres.</p>
+          body: `<p>Mínimo 10 caracteres, com letras maiúsculas, minúsculas e caractere especial (sem matrícula ou seu nome).</p>
             <div class="field"><label for="pw-atual">Senha atual</label><input class="input" id="pw-atual" name="atual" type="password" autocomplete="current-password"></div>
             <div class="field"><label for="pw-nova">Nova senha</label><input class="input" id="pw-nova" name="nova" type="password" autocomplete="new-password"></div>`,
           confirm: 'Alterar senha',
           validate: (f, form) => {
             const a = f.get('atual'), n = f.get('nova');
             const ea = form.querySelector('#pw-atual'), en = form.querySelector('#pw-nova');
-            const m1 = a.length < 8 ? 'Informe sua senha atual (mínimo 8 caracteres).' : '';
-            const m2 = n.length < 8 ? 'A nova senha precisa ter pelo menos 8 caracteres.' : '';
+            const m1 = a.length < 8 ? 'Informe sua senha atual.' : '';
+            let m2 = '';
+            if (n.length < 10) m2 = 'Mínimo de 10 caracteres.';
+            else if (!/[A-Z]/.test(n)) m2 = 'Inclua pelo menos uma letra maiúscula.';
+            else if (!/[a-z]/.test(n)) m2 = 'Inclua pelo menos uma letra minúscula.';
+            else if (!/[^A-Za-z0-9\s]/.test(n)) m2 = 'Inclua pelo menos um caractere especial.';
+            else if (u) {
+              const norm = s => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+              const sNorm = norm(n);
+              const mat = String(u.login || '').replace(/\D/g, '');
+              if (mat && sNorm.includes(mat)) m2 = 'Não pode conter seu número de matrícula.';
+              else if ((norm(u.nome).match(/[a-z]{3,}/g) || []).some(p => sNorm.includes(p))) m2 = 'Não pode conter seu próprio nome.';
+            }
             UI.fieldError(ea, m1); UI.fieldError(en, m2);
             if (m1) ea.focus(); else if (m2) en.focus();
             return m1 || m2;

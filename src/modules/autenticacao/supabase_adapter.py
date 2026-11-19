@@ -13,7 +13,7 @@ from src.core.exceptions import (
     RecursoNaoEncontrado,
     ValidacaoDominio,
 )
-from src.core.security import HASH_ISCA, gerar_hash_senha, verificar_senha
+from src.core.security import HASH_ISCA, gerar_hash_senha, validar_forca_senha, verificar_senha
 from src.core.supabase_client import SupabaseClient
 from src.modules.autenticacao.schemas import CriarUsuarioRequest, Perfil, UsuarioAutenticado
 from src.modules.autenticacao.service import SENHA_PADRAO_SEED
@@ -164,6 +164,11 @@ class SupabaseAuthAdapter:
         )
         if not linhas or not self._validar_credenciais(linhas[0], senha_atual):
             raise NaoAutenticado("Senha atual incorreta.")
+        validar_forca_senha(
+            nova_senha,
+            matricula=str(linhas[0]["matricula_siape"]),
+            nome=str(linhas[0]["nome"]),
+        )
         self._client.atualizar_senha_auth(usuario_id, nova_senha, deve_redefinir_senha=False)
 
     def solicitar_recuperacao_senha(self, email: str) -> str | None:
@@ -192,4 +197,7 @@ class SupabaseAuthAdapter:
             reg = self._tokens_recuperacao.pop(token, None)
         if reg is None or reg.expira_em <= agora:
             raise ValidacaoDominio("Token de redefinição inválido ou expirado.")
+        alvo = self.obter_por_id(reg.usuario_id)
+        if alvo is not None:
+            validar_forca_senha(nova_senha, matricula=alvo.matricula, nome=alvo.nome)
         self.redefinir_senha(reg.usuario_id, nova_senha)

@@ -359,15 +359,23 @@
             banner('error', titulo, data.mensagem || 'Confira os dados e tente de novo.');
             return senha.select();
           }
-          const finalizarEntrada = async (tok) => {
+          const validarNovaSenha = (nova, atual, matricula, nome) => {
+            if (nova.length < 10) return 'A nova senha deve ter no mínimo 10 caracteres.';
+            if (!/[A-Z]/.test(nova)) return 'Inclua pelo menos uma letra maiúscula.';
+            if (!/[a-z]/.test(nova)) return 'Inclua pelo menos uma letra minúscula.';
+            if (!/[^A-Za-z0-9\s]/.test(nova)) return 'Inclua pelo menos um caractere especial (ex.: @, #, !, $).';
+            if (atual && nova === atual) return 'A nova senha deve ser diferente da senha atual.';
+            const norm = s => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+            const sNorm = norm(nova);
+            const mat = String(matricula || '').replace(/\D/g, '');
+            if (mat && sNorm.includes(mat)) return 'A nova senha não pode conter seu número de matrícula.';
+            const partes = norm(nome).match(/[a-z]{3,}/g) || [];
+            if (partes.some(p => sNorm.includes(p))) return 'A nova senha não pode conter o seu próprio nome.';
+            return '';
+          };
+
+          const finalizarEntrada = (uApi, tok) => {
             try { sessionStorage.setItem('unifap-api-jwt', tok); } catch (err) { /* ok */ }
-            const rMe = await fetch('/api/v1/auth/me', { headers: { Authorization: 'Bearer ' + tok } });
-            const uApi = await rMe.json();
-            if (!uApi.vinculo_ativo) {
-              btn.disabled = false; btn.textContent = 'Entrar';
-              try { sessionStorage.removeItem('unifap-api-jwt'); } catch (err) { /* ok */ }
-              return banner('error', 'Vínculo institucional inativo', 'Apenas discentes e servidores com vínculo ativo podem usar o sistema.');
-            }
             const mapaPerfis = {
               ADMIN: ['admin', 'gestor', 'solicitante'],
               GESTOR: ['gestor', 'solicitante'],
@@ -392,66 +400,60 @@
           };
 
           const tok = data.access_token;
-          if (data.deve_redefinir_senha) {
-            const authBody = $(root, '.auth-body');
-            authBody.innerHTML = `
-              <h1 class="auth-title">Defina sua nova senha</h1>
-              <p class="auth-sub">Por segurança, você precisa criar uma nova senha pessoal antes de acessar o sistema.</p>
-              <form novalidate data-firstpw>
-                <div data-firstmsg><div class="banner warn" role="alert">${ic('lock_reset')}<div><b>Redefinição obrigatória</b>Escolha uma senha nova diferente da senha provisória (mínimo 8 caracteres).</div></div></div>
-                <div class="field">
-                  <label for="nova-pw">Nova senha</label>
-                  <div class="input-icon pw">${ic('lock')}
-                    <input class="input" id="nova-pw" name="nova" type="password" autocomplete="new-password" placeholder="Digite sua nova senha">
-                  </div>
-                </div>
-                <div class="field">
-                  <label for="conf-pw">Confirmar nova senha</label>
-                  <div class="input-icon pw">${ic('lock')}
-                    <input class="input" id="conf-pw" name="conf" type="password" autocomplete="new-password" placeholder="Repita a nova senha">
-                  </div>
-                </div>
-                <button class="btn btn-primary btn-lg btn-block" type="submit" data-firstsub>Salvar nova senha e entrar</button>
-                <button class="btn btn-ghost btn-block" type="button" data-firstcancel style="margin-top:8px">Voltar ao login</button>
-              </form>`;
-            const f2 = $(authBody, '[data-firstpw]'), m2 = $(authBody, '[data-firstmsg]');
-            const n1 = $(authBody, '#nova-pw'), n2 = $(authBody, '#conf-pw'), b2 = $(authBody, '[data-firstsub]');
-            n1.focus();
-            $(authBody, '[data-firstcancel]').addEventListener('click', () => {
-              fetch('/api/v1/auth/logout', { method: 'POST', headers: { Authorization: 'Bearer ' + tok } }).catch(() => {});
-              App.render();
-            });
-            f2.addEventListener('submit', async ev => {
-              ev.preventDefault();
-              const v1 = n1.value, v2 = n2.value;
-              const e1 = v1.length < 8 ? 'A nova senha precisa ter pelo menos 8 caracteres.' : v1 === pw ? 'A nova senha deve ser diferente da senha atual.' : '';
-              const e2 = v2 !== v1 ? 'As senhas informadas não conferem.' : '';
-              fieldError(n1, e1); fieldError(n2, e2);
-              if (e1) return n1.focus();
-              if (e2) return n2.focus();
-              b2.disabled = true; b2.innerHTML = '<span class="spin" aria-hidden="true"></span>Salvando';
-              try {
-                const rAlt = await fetch('/api/v1/auth/alterar-senha', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tok },
-                  body: JSON.stringify({ senha_atual: pw, nova_senha: v1 })
-                });
-                if (!rAlt.ok) {
-                  const errD = await rAlt.json().catch(() => ({}));
-                  b2.disabled = false; b2.textContent = 'Salvar nova senha e entrar';
-                  m2.innerHTML = `<div class="banner error" role="alert">${ic('error')}<div><b>Não foi possível redefinir</b>${esc(errD.mensagem || 'Tente novamente.')}</div></div>`;
-                  return;
-                }
-                toast('Nova senha definida com sucesso.');
-                await finalizarEntrada(tok);
-              } catch (err) {
-                b2.disabled = false; b2.textContent = 'Salvar nova senha e entrar';
-                m2.innerHTML = `<div class="banner error" role="alert">${ic('error')}<div><b>Erro de conexão</b>Tente novamente em instantes.</div></div>`;
-              }
-            });
-            return;
+          const rMe = await fetch('/api/v1/auth/me', { headers: { Authorization: 'Bearer ' + tok } });
+          const uApi = await rMe.json();
+          if (!uApi.vinculo_ativo) {
+            btn.disabled = false; btn.textContent = 'Entrar';
+            return banner('error', 'Vínculo institucional inativo', 'Apenas discentes e servidores com vínculo ativo podem usar o sistema.');
           }
-          await finalizarEntrada(tok);
+
+          if (data.deve_redefinir_senha || data.usando_senha_padrao) {
+            btn.disabled = false; btn.textContent = 'Entrar';
+            const motivo = data.usando_senha_padrao
+              ? 'Você entrou com a senha padrão. Por segurança, crie uma nova senha pessoal para continuar.'
+              : 'O administrador solicitou que você redefina sua senha antes de acessar o sistema.';
+            while (true) {
+              const fd = await dialog({
+                title: 'Alteração de senha obrigatória',
+                body: `<p>${motivo}</p>
+                  <ul class="small muted" style="margin:6px 0 14px;padding-left:18px;display:grid;gap:4px">
+                    <li>Mínimo de <b>10 caracteres</b></li>
+                    <li>Letras <b>maiúsculas e minúsculas</b> + <b>caractere especial</b> (ex.: @, #, !, $)</li>
+                    <li>Não pode conter seu <b>número de matrícula</b> nem seu <b>próprio nome</b></li>
+                  </ul>
+                  <div class="field"><label for="pop-nova">Nova senha</label><input class="input" id="pop-nova" name="nova" type="password" autocomplete="new-password"></div>
+                  <div class="field"><label for="pop-conf">Confirmar nova senha</label><input class="input" id="pop-conf" name="conf" type="password" autocomplete="new-password"></div>`,
+                confirm: 'Salvar nova senha e entrar',
+                cancel: 'Cancelar',
+                validate: (vals, dlgForm) => {
+                  const v1 = vals.get('nova'), v2 = vals.get('conf');
+                  const e1El = dlgForm.querySelector('#pop-nova'), e2El = dlgForm.querySelector('#pop-conf');
+                  const m1 = validarNovaSenha(v1, pw, uApi.matricula, uApi.nome);
+                  const m2 = v2 !== v1 ? 'As senhas informadas não conferem.' : '';
+                  fieldError(e1El, m1); fieldError(e2El, m2);
+                  if (m1) e1El.focus(); else if (m2) e2El.focus();
+                  return m1 || m2;
+                }
+              });
+              if (!fd) {
+                fetch('/api/v1/auth/logout', { method: 'POST', headers: { Authorization: 'Bearer ' + tok } }).catch(() => {});
+                return banner('info', 'Alteração cancelada', 'É necessário definir uma nova senha para acessar o sistema.');
+              }
+              const rAlt = await fetch('/api/v1/auth/alterar-senha', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tok },
+                body: JSON.stringify({ senha_atual: pw, nova_senha: fd.get('nova') })
+              });
+              if (!rAlt.ok) {
+                const errD = await rAlt.json().catch(() => ({}));
+                toast(errD.mensagem || 'Não foi possível redefinir a senha.', 'err');
+                continue;
+              }
+              toast('Nova senha definida com sucesso.');
+              return finalizarEntrada(uApi, tok);
+            }
+          }
+          finalizarEntrada(uApi, tok);
         } catch (err) {
           btn.disabled = false; btn.textContent = 'Entrar';
           banner('error', 'Serviço de autenticação indisponível', 'Não foi possível verificar suas credenciais agora. Tente de novo em alguns minutos.');
