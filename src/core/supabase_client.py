@@ -62,13 +62,20 @@ class SupabaseClient:
             "Content-Type": "application/json",
         }
 
-    def criar_usuario_auth(self, email: str, senha: str) -> str:
+    def criar_usuario_auth(
+        self, email: str, senha: str, *, deve_redefinir_senha: bool = False
+    ) -> str:
         """Cria usuário no Supabase Auth e retorna o UUID."""
         try:
             r = httpx.post(
                 f"{self._root_url}/auth/v1/admin/users",
                 headers=self._auth_admin_headers(),
-                json={"email": email, "password": senha, "email_confirm": True},
+                json={
+                    "email": email,
+                    "password": senha,
+                    "email_confirm": True,
+                    "app_metadata": {"deve_redefinir_senha": deve_redefinir_senha},
+                },
                 timeout=15.0,
             )
         except httpx.HTTPError as exc:
@@ -82,6 +89,21 @@ class SupabaseClient:
         dados = r.json()
         return str(dados["id"])
 
+    def obter_flag_redefinir_senha_auth(self, usuario_id: str) -> bool:
+        """Lê `app_metadata.deve_redefinir_senha` no Supabase Auth (não editável pelo usuário)."""
+        try:
+            r = httpx.get(
+                f"{self._root_url}/auth/v1/admin/users/{usuario_id}",
+                headers=self._auth_admin_headers(),
+                timeout=10.0,
+            )
+            if r.status_code != 200:
+                return False
+            app_meta = r.json().get("app_metadata") or {}
+            return bool(app_meta.get("deve_redefinir_senha", False))
+        except httpx.HTTPError:
+            return False
+
     def deletar_usuario_auth(self, usuario_id: str) -> None:
         try:
             httpx.delete(
@@ -92,13 +114,18 @@ class SupabaseClient:
         except httpx.HTTPError as exc:
             log_app.error("Falha ao reverter usuário no Supabase Auth: %s", exc)
 
-    def atualizar_senha_auth(self, usuario_id: str, nova_senha: str) -> None:
-        """Atualiza a senha de um usuário no Supabase Auth (admin ou autoatendimento)."""
+    def atualizar_senha_auth(
+        self, usuario_id: str, nova_senha: str, *, deve_redefinir_senha: bool = False
+    ) -> None:
+        """Atualiza a senha e a flag `app_metadata.deve_redefinir_senha` no Supabase Auth."""
         try:
             r = httpx.put(
                 f"{self._root_url}/auth/v1/admin/users/{usuario_id}",
                 headers=self._auth_admin_headers(),
-                json={"password": nova_senha},
+                json={
+                    "password": nova_senha,
+                    "app_metadata": {"deve_redefinir_senha": deve_redefinir_senha},
+                },
                 timeout=15.0,
             )
         except httpx.HTTPError as exc:

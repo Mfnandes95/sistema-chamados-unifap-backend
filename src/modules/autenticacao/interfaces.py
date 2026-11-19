@@ -18,7 +18,9 @@ class IAutenticadorInstitucional(Protocol):
 
     def criar_usuario(self, dados: CriarUsuarioRequest) -> UsuarioAutenticado: ...
 
-    def redefinir_senha(self, usuario_id: str, nova_senha: str) -> None: ...
+    def redefinir_senha(
+        self, usuario_id: str, nova_senha: str, *, deve_redefinir_senha: bool = False
+    ) -> None: ...
 
     def alterar_propria_senha(
         self, usuario_id: str, senha_atual: str, nova_senha: str

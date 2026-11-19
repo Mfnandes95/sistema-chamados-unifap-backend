@@ -50,18 +50,23 @@ UsuarioAtual = Annotated[UsuarioAutenticado, Depends(obter_usuario_atual)]
 """Somente leitura: usuários com vínculo inativo ainda consultam seus próprios chamados."""
 
 
-def _exigir(*perfis: Perfil) -> Callable[[UsuarioAutenticado], UsuarioAutenticado]:
+def _exigir(
+    *perfis: Perfil, permitir_troca_pendente: bool = False
+) -> Callable[[UsuarioAutenticado], UsuarioAutenticado]:
     def guard(usuario: UsuarioAtual) -> UsuarioAutenticado:
         if usuario.perfil not in perfis:
             raise AcessoNegado("Perfil sem permissão para esta operação.")
         if not usuario.vinculo_ativo:
             raise AcessoNegado("RN02: vínculo institucional inativo.")
+        if usuario.deve_redefinir_senha and not permitir_troca_pendente:
+            raise AcessoNegado("É obrigatório redefinir sua senha antes de continuar.")
         return usuario
 
     return guard
 
 
 exigir_usuario_ativo = _exigir(*Perfil)
+exigir_usuario_ativo_para_troca = _exigir(*Perfil, permitir_troca_pendente=True)
 exigir_solicitante_ativo = _exigir(Perfil.SOLICITANTE)
 exigir_executor = _exigir(Perfil.EXECUTOR)
 exigir_gestor = _exigir(Perfil.GESTOR)
@@ -71,6 +76,8 @@ exigir_equipe_tecnica = _exigir(Perfil.EXECUTOR, Perfil.GESTOR, Perfil.ADMIN)
 
 UsuarioAtivo = Annotated[UsuarioAutenticado, Depends(exigir_usuario_ativo)]
 """Obrigatório em toda operação de escrita (RN02 / V03)."""
+UsuarioAtivoParaTroca = Annotated[UsuarioAutenticado, Depends(exigir_usuario_ativo_para_troca)]
+"""Permite apenas a troca obrigatória de senha quando deve_redefinir_senha=True."""
 SolicitanteAtivo = Annotated[UsuarioAutenticado, Depends(exigir_solicitante_ativo)]
 Executor = Annotated[UsuarioAutenticado, Depends(exigir_executor)]
 Gestor = Annotated[UsuarioAutenticado, Depends(exigir_gestor)]

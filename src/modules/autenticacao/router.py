@@ -3,7 +3,12 @@ from fastapi import APIRouter, Request, Response, status
 from src.core.container import ContainerDep
 from src.core.exceptions import NaoAutenticado, log_seguranca
 from src.core.security import criar_token
-from src.modules.autenticacao.dependencies import Admin, SessaoAtual, UsuarioAtivo, UsuarioAtual
+from src.modules.autenticacao.dependencies import (
+    Admin,
+    SessaoAtual,
+    UsuarioAtivoParaTroca,
+    UsuarioAtual,
+)
 from src.modules.autenticacao.schemas import (
     AlterarPropriaSenhaRequest,
     ConfirmarRedefinicaoSenhaRequest,
@@ -48,6 +53,7 @@ def login(dados: LoginRequest, request: Request, container: ContainerDep) -> Tok
         access_token=criar_token(usuario.id, usuario.perfil.value, s),
         expira_em_segundos=s.jwt_expire_minutes * 60,
         perfil=usuario.perfil,
+        deve_redefinir_senha=usuario.deve_redefinir_senha,
     )
 
 
@@ -64,7 +70,7 @@ def me(usuario: UsuarioAtual) -> UsuarioAutenticado:
 
 @router.post("/api/v1/auth/alterar-senha", status_code=status.HTTP_204_NO_CONTENT)
 def alterar_propria_senha(
-    dados: AlterarPropriaSenhaRequest, usuario: UsuarioAtivo, container: ContainerDep
+    dados: AlterarPropriaSenhaRequest, usuario: UsuarioAtivoParaTroca, container: ContainerDep
 ) -> Response:
     """Autoatendimento: usuário autenticado redefine sua própria senha."""
     container.autenticador.alterar_propria_senha(usuario.id, dados.senha_atual, dados.nova_senha)
@@ -133,6 +139,11 @@ def redefinir_senha_admin(
     container: ContainerDep,
 ) -> Response:
     """Redefinição manual de senha executada por um administrador."""
-    container.autenticador.redefinir_senha(usuario_id, dados.nova_senha)
-    log_seguranca.info("SENHA_REDEFINIDA_ADMIN admin=%s alvo=%s", admin.id, usuario_id)
+    container.autenticador.redefinir_senha(
+        usuario_id, dados.nova_senha, deve_redefinir_senha=dados.deve_redefinir_senha
+    )
+    log_seguranca.info(
+        "SENHA_REDEFINIDA_ADMIN admin=%s alvo=%s exigir_troca=%s",
+        admin.id, usuario_id, dados.deve_redefinir_senha,
+    )
     return Response(status_code=status.HTTP_204_NO_CONTENT)

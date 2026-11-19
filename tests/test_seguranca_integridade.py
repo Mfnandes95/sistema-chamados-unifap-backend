@@ -433,26 +433,41 @@ async def test_admin_cria_usuario_redefine_senha_e_acompanha_chamados(
     assert (await client.get("/api/v1/relatorios/historico",
                              headers=tokens["admin"])).status_code == 200
 
-    # Admin redefine a senha manualmente
-    r_red = await client.post(f"/api/v1/usuarios/{novo_id}/redefinir-senha",
-                              json={"nova_senha": "SenhaAdmin@2026"}, headers=tokens["admin"])
+    # Admin redefine a senha manualmente (exigindo troca no próximo acesso)
+    r_red = await client.post(
+        f"/api/v1/usuarios/{novo_id}/redefinir-senha",
+        json={"nova_senha": "SenhaAdmin@2026", "deve_redefinir_senha": True},
+        headers=tokens["admin"],
+    )
     assert r_red.status_code == 204
     assert (await client.post("/api/v1/auth/login",
                               json={"matricula": "20249999", "senha": "SenhaInicial@1"})).status_code == 401
     r_log2 = await client.post("/api/v1/auth/login",
                                json={"matricula": "20249999", "senha": "SenhaAdmin@2026"})
-    assert r_log2.status_code == 200
+    assert r_log2.status_code == 200 and r_log2.json()["deve_redefinir_senha"] is True
     h_novo2 = {"Authorization": f"Bearer {r_log2.json()['access_token']}"}
+    # Enquanto não trocar a senha, operações de escrita são bloqueadas com 403
+    assert (await client.post("/api/v1/chamados", json=CHAMADO_VALIDO,
+                              headers=h_novo2)).status_code == 403
+    # Não aceita repetir a mesma senha
+    assert (await client.post(
+        "/api/v1/auth/alterar-senha",
+        json={"senha_atual": "SenhaAdmin@2026", "nova_senha": "SenhaAdmin@2026"},
+        headers=h_novo2,
+    )).status_code == 422
 
-    # Próprio usuário altera sua senha autenticado
+    # Próprio usuário altera sua senha autenticado → limpa a flag e libera o acesso
     r_alt = await client.post(
         "/api/v1/auth/alterar-senha",
         json={"senha_atual": "SenhaAdmin@2026", "nova_senha": "SenhaPropria@2026"},
         headers=h_novo2,
     )
     assert r_alt.status_code == 204
-    assert (await client.post("/api/v1/auth/login",
-                              json={"matricula": "20249999", "senha": "SenhaPropria@2026"})).status_code == 200
+    assert (await client.post("/api/v1/chamados", json=CHAMADO_VALIDO,
+                              headers=h_novo2)).status_code == 201
+    r_log3 = await client.post("/api/v1/auth/login",
+                               json={"matricula": "20249999", "senha": "SenhaPropria@2026"})
+    assert r_log3.status_code == 200 and r_log3.json()["deve_redefinir_senha"] is False
 
     # Autoatendimento "esqueci a senha" (token de uso único)
     r_esq = await client.post("/api/v1/auth/esqueci-senha", json={"email": "joao.novo@unifap.br"})

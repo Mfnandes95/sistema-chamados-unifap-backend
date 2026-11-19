@@ -117,29 +117,37 @@ class InMemoryAuthAdapter:
                 perfil=dados.perfil,
                 vinculo_ativo=dados.vinculo_ativo,
                 setor=dados.setor,
+                deve_redefinir_senha=dados.deve_redefinir_senha,
             )
             reg = _RegistroUsuario(usuario, gerar_hash_senha(dados.senha))
             self._por_matricula[usuario.matricula] = reg
             self._por_id[usuario.id] = reg
             return usuario
 
-    def redefinir_senha(self, usuario_id: str, nova_senha: str) -> None:
+    def redefinir_senha(
+        self, usuario_id: str, nova_senha: str, *, deve_redefinir_senha: bool = False
+    ) -> None:
         with self._lock:
             reg = self._por_id.get(usuario_id)
             if reg is None:
                 raise RecursoNaoEncontrado("Usuário não encontrado.")
-            novo = _RegistroUsuario(reg.usuario, gerar_hash_senha(nova_senha))
+            usuario_atualizado = reg.usuario.model_copy(
+                update={"deve_redefinir_senha": deve_redefinir_senha}
+            )
+            novo = _RegistroUsuario(usuario_atualizado, gerar_hash_senha(nova_senha))
             self._por_id[usuario_id] = novo
-            self._por_matricula[reg.usuario.matricula] = novo
+            self._por_matricula[usuario_atualizado.matricula] = novo
 
     def alterar_propria_senha(
         self, usuario_id: str, senha_atual: str, nova_senha: str
     ) -> None:
+        if senha_atual == nova_senha:
+            raise ValidacaoDominio("A nova senha deve ser diferente da senha atual.")
         with self._lock:
             reg = self._por_id.get(usuario_id)
         if reg is None or not verificar_senha(senha_atual, reg.hash_senha):
             raise NaoAutenticado("Senha atual incorreta.")
-        self.redefinir_senha(usuario_id, nova_senha)
+        self.redefinir_senha(usuario_id, nova_senha, deve_redefinir_senha=False)
 
     def solicitar_recuperacao_senha(self, email: str) -> str | None:
         email_norm = email.lower()

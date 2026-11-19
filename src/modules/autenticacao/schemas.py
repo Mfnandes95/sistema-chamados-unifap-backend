@@ -25,6 +25,7 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
     expira_em_segundos: int
     perfil: Perfil
+    deve_redefinir_senha: bool = False
 
 
 class UsuarioAutenticado(BaseModel):
@@ -37,6 +38,7 @@ class UsuarioAutenticado(BaseModel):
     perfil: Perfil
     vinculo_ativo: bool
     setor: str | None = None
+    deve_redefinir_senha: bool = False
 
 
 class CriarUsuarioRequest(_Entrada):
@@ -48,10 +50,12 @@ class CriarUsuarioRequest(_Entrada):
     vinculo: Literal["discente", "docente", "tecnico_administrativo"] = "discente"
     vinculo_ativo: bool = True
     setor: str | None = Field(default=None, max_length=64)
+    deve_redefinir_senha: bool = False
 
 
 class RedefinirSenhaAdminRequest(_Entrada):
     nova_senha: str = Field(min_length=8, max_length=128)
+    deve_redefinir_senha: bool = True
 
 
 class AlterarPropriaSenhaRequest(_Entrada):

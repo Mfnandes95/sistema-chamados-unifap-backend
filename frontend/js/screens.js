@@ -359,36 +359,99 @@
             banner('error', titulo, data.mensagem || 'Confira os dados e tente de novo.');
             return senha.select();
           }
-          const tok = data.access_token;
-          try { sessionStorage.setItem('unifap-api-jwt', tok); } catch (err) { /* ok */ }
-          const rMe = await fetch('/api/v1/auth/me', { headers: { Authorization: 'Bearer ' + tok } });
-          const uApi = await rMe.json();
-          if (!uApi.vinculo_ativo) {
-            btn.disabled = false; btn.textContent = 'Entrar';
-            try { sessionStorage.removeItem('unifap-api-jwt'); } catch (err) { /* ok */ }
-            return banner('error', 'Vínculo institucional inativo', 'Apenas discentes e servidores com vínculo ativo podem usar o sistema.');
-          }
-          const mapaPerfis = {
-            ADMIN: ['admin', 'gestor', 'solicitante'],
-            GESTOR: ['gestor', 'solicitante'],
-            EXECUTOR: ['executor', 'solicitante'],
-            SOLICITANTE: ['solicitante']
-          };
-          let uLocal = DB.s.usuarios.find(x => x.id === uApi.id || x.login === uApi.matricula);
-          const perfisFront = mapaPerfis[uApi.perfil] || ['solicitante'];
-          if (!uLocal) {
-            uLocal = {
-              id: uApi.id, nome: uApi.nome, login: uApi.matricula, ident: uApi.matricula,
-              email: uApi.email, tipo: uApi.perfil === 'SOLICITANTE' ? 'Discente' : 'Servidor',
-              vinculoAtivo: uApi.vinculo_ativo, acessoAtivo: true, perfis: perfisFront, setor: uApi.setor || ''
+          const finalizarEntrada = async (tok) => {
+            try { sessionStorage.setItem('unifap-api-jwt', tok); } catch (err) { /* ok */ }
+            const rMe = await fetch('/api/v1/auth/me', { headers: { Authorization: 'Bearer ' + tok } });
+            const uApi = await rMe.json();
+            if (!uApi.vinculo_ativo) {
+              btn.disabled = false; btn.textContent = 'Entrar';
+              try { sessionStorage.removeItem('unifap-api-jwt'); } catch (err) { /* ok */ }
+              return banner('error', 'Vínculo institucional inativo', 'Apenas discentes e servidores com vínculo ativo podem usar o sistema.');
+            }
+            const mapaPerfis = {
+              ADMIN: ['admin', 'gestor', 'solicitante'],
+              GESTOR: ['gestor', 'solicitante'],
+              EXECUTOR: ['executor', 'solicitante'],
+              SOLICITANTE: ['solicitante']
             };
-            DB.s.usuarios.unshift(uLocal);
-          } else {
-            uLocal.id = uApi.id; uLocal.nome = uApi.nome; uLocal.email = uApi.email;
-            uLocal.vinculoAtivo = uApi.vinculo_ativo; uLocal.perfis = perfisFront;
+            let uLocal = DB.s.usuarios.find(x => x.id === uApi.id || x.login === uApi.matricula);
+            const perfisFront = mapaPerfis[uApi.perfil] || ['solicitante'];
+            if (!uLocal) {
+              uLocal = {
+                id: uApi.id, nome: uApi.nome, login: uApi.matricula, ident: uApi.matricula,
+                email: uApi.email, tipo: uApi.perfil === 'SOLICITANTE' ? 'Discente' : 'Servidor',
+                vinculoAtivo: uApi.vinculo_ativo, acessoAtivo: true, perfis: perfisFront, setor: uApi.setor || ''
+              };
+              DB.s.usuarios.unshift(uLocal);
+            } else {
+              uLocal.id = uApi.id; uLocal.nome = uApi.nome; uLocal.email = uApi.email;
+              uLocal.vinculoAtivo = uApi.vinculo_ativo; uLocal.perfis = perfisFront;
+            }
+            DB.s.sessao = uLocal.id; DB.save();
+            location.hash = '#/painel';
+          };
+
+          const tok = data.access_token;
+          if (data.deve_redefinir_senha) {
+            const authBody = $(root, '.auth-body');
+            authBody.innerHTML = `
+              <h1 class="auth-title">Defina sua nova senha</h1>
+              <p class="auth-sub">Por segurança, você precisa criar uma nova senha pessoal antes de acessar o sistema.</p>
+              <form novalidate data-firstpw>
+                <div data-firstmsg><div class="banner warn" role="alert">${ic('lock_reset')}<div><b>Redefinição obrigatória</b>Escolha uma senha nova diferente da senha provisória (mínimo 8 caracteres).</div></div></div>
+                <div class="field">
+                  <label for="nova-pw">Nova senha</label>
+                  <div class="input-icon pw">${ic('lock')}
+                    <input class="input" id="nova-pw" name="nova" type="password" autocomplete="new-password" placeholder="Digite sua nova senha">
+                  </div>
+                </div>
+                <div class="field">
+                  <label for="conf-pw">Confirmar nova senha</label>
+                  <div class="input-icon pw">${ic('lock')}
+                    <input class="input" id="conf-pw" name="conf" type="password" autocomplete="new-password" placeholder="Repita a nova senha">
+                  </div>
+                </div>
+                <button class="btn btn-primary btn-lg btn-block" type="submit" data-firstsub>Salvar nova senha e entrar</button>
+                <button class="btn btn-ghost btn-block" type="button" data-firstcancel style="margin-top:8px">Voltar ao login</button>
+              </form>`;
+            const f2 = $(authBody, '[data-firstpw]'), m2 = $(authBody, '[data-firstmsg]');
+            const n1 = $(authBody, '#nova-pw'), n2 = $(authBody, '#conf-pw'), b2 = $(authBody, '[data-firstsub]');
+            n1.focus();
+            $(authBody, '[data-firstcancel]').addEventListener('click', () => {
+              fetch('/api/v1/auth/logout', { method: 'POST', headers: { Authorization: 'Bearer ' + tok } }).catch(() => {});
+              App.render();
+            });
+            f2.addEventListener('submit', async ev => {
+              ev.preventDefault();
+              const v1 = n1.value, v2 = n2.value;
+              const e1 = v1.length < 8 ? 'A nova senha precisa ter pelo menos 8 caracteres.' : v1 === pw ? 'A nova senha deve ser diferente da senha atual.' : '';
+              const e2 = v2 !== v1 ? 'As senhas informadas não conferem.' : '';
+              fieldError(n1, e1); fieldError(n2, e2);
+              if (e1) return n1.focus();
+              if (e2) return n2.focus();
+              b2.disabled = true; b2.innerHTML = '<span class="spin" aria-hidden="true"></span>Salvando';
+              try {
+                const rAlt = await fetch('/api/v1/auth/alterar-senha', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tok },
+                  body: JSON.stringify({ senha_atual: pw, nova_senha: v1 })
+                });
+                if (!rAlt.ok) {
+                  const errD = await rAlt.json().catch(() => ({}));
+                  b2.disabled = false; b2.textContent = 'Salvar nova senha e entrar';
+                  m2.innerHTML = `<div class="banner error" role="alert">${ic('error')}<div><b>Não foi possível redefinir</b>${esc(errD.mensagem || 'Tente novamente.')}</div></div>`;
+                  return;
+                }
+                toast('Nova senha definida com sucesso.');
+                await finalizarEntrada(tok);
+              } catch (err) {
+                b2.disabled = false; b2.textContent = 'Salvar nova senha e entrar';
+                m2.innerHTML = `<div class="banner error" role="alert">${ic('error')}<div><b>Erro de conexão</b>Tente novamente em instantes.</div></div>`;
+              }
+            });
+            return;
           }
-          DB.s.sessao = uLocal.id; DB.save();
-          location.hash = '#/painel';
+          await finalizarEntrada(tok);
         } catch (err) {
           btn.disabled = false; btn.textContent = 'Entrar';
           banner('error', 'Serviço de autenticação indisponível', 'Não foi possível verificar suas credenciais agora. Tente de novo em alguns minutos.');

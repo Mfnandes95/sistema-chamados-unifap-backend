@@ -240,8 +240,9 @@
         $(edit, '[data-resetpw]').addEventListener('click', async () => {
           const fd = await dialog({
             title: `Redefinir senha de ${esc(u.nome)}`,
-            body: `<p>Defina manualmente uma nova senha temporária (mínimo 8 caracteres). O usuário poderá alterá-la depois no próprio menu.</p>
-              <div class="field"><label for="adm-pw">Nova senha</label><input class="input" id="adm-pw" name="nova_senha" type="password" autocomplete="new-password"></div>`,
+            body: `<p>Defina manualmente uma nova senha temporária (mínimo 8 caracteres).</p>
+              <div class="field"><label for="adm-pw">Nova senha</label><input class="input" id="adm-pw" name="nova_senha" type="password" autocomplete="new-password"></div>
+              <label class="auth-check" style="margin-top:10px"><input type="checkbox" name="exigir_troca" checked>O usuário deve redefinir a senha no próximo acesso</label>`,
             confirm: 'Redefinir senha',
             validate: (vals, form) => {
               const p = vals.get('nova_senha');
@@ -255,16 +256,17 @@
           if (!fd) return;
           const tok = (() => { try { return sessionStorage.getItem('unifap-api-jwt') || ''; } catch (err) { return ''; } })();
           try {
+            const exigir = fd.get('exigir_troca') === 'on';
             const r = await fetch(`/api/v1/usuarios/${encodeURIComponent(u.id)}/redefinir-senha`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tok },
-              body: JSON.stringify({ nova_senha: fd.get('nova_senha') })
+              body: JSON.stringify({ nova_senha: fd.get('nova_senha'), deve_redefinir_senha: exigir })
             });
             if (!r.ok) {
               const d = await r.json().catch(() => ({}));
               return toast(d.mensagem || 'Não foi possível redefinir a senha.', 'err');
             }
-            toast(`Senha de ${u.nome} redefinida com sucesso.`);
+            toast(`Senha de ${u.nome} redefinida${exigir ? ' (troca obrigatória no próximo acesso)' : ''}.`);
           } catch (err) {
             toast('Erro de conexão ao redefinir senha.', 'err');
           }
@@ -343,7 +345,8 @@
             <div class="field"><label for="nemail">E-mail institucional</label><input class="input" id="nemail" name="email" type="email" placeholder="nome@unifap.br"></div>
             <div class="field"><label for="nsenha">Senha inicial</label><input class="input" id="nsenha" name="senha" type="password" autocomplete="new-password"></div>
             <div class="field"><label for="nperfil">Perfil</label><select class="select" id="nperfil" name="perfil"><option value="SOLICITANTE">Solicitante</option><option value="EXECUTOR">Executor</option><option value="GESTOR">Gestor / triagem</option><option value="ADMIN">Administrador</option></select></div>
-            <div class="field"><label for="ntipo">Tipo de vínculo</label><select class="select" id="ntipo" name="tipo"><option value="discente">Discente</option><option value="docente">Docente</option><option value="tecnico_administrativo">Técnico-administrativo</option></select></div>`,
+            <div class="field"><label for="ntipo">Tipo de vínculo</label><select class="select" id="ntipo" name="tipo"><option value="discente">Discente</option><option value="docente">Docente</option><option value="tecnico_administrativo">Técnico-administrativo</option></select></div>
+            <label class="auth-check" style="margin-top:10px"><input type="checkbox" name="exigir_troca" checked>O usuário deve redefinir a senha no próximo acesso</label>`,
           confirm: 'Cadastrar',
           validate: (f, form) => {
             const id = f.get('id').replace(/\D/g, ''), nome = f.get('nome').trim();
@@ -372,7 +375,8 @@
               senha: fd.get('senha'),
               perfil: fd.get('perfil'),
               vinculo: fd.get('tipo'),
-              vinculo_ativo: true
+              vinculo_ativo: true,
+              deve_redefinir_senha: fd.get('exigir_troca') === 'on'
             })
           });
           const d = await r.json().catch(() => ({}));
