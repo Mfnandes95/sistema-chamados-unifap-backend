@@ -258,6 +258,7 @@ class SupabaseRepositorioChamado:
                 }
                 for ev in chamado.evidencias:
                     if ev.id not in exist_e:
+                        etapa = "abertura" if chamado.status is StatusChamado.ABERTO else "atendimento"
                         self._client.insert("chamado_evidencias", {
                             "id": ev.id,
                             "chamado_id": chamado_uuid,
@@ -266,7 +267,7 @@ class SupabaseRepositorioChamado:
                             "storage_path": ev.caminho,
                             "tipo_mime": ev.content_type,
                             "tamanho_bytes": ev.tamanho_bytes,
-                            "etapa": _STATUS_PARA_DB[chamado.status],
+                            "etapa": etapa,
                             "criado_em": ev.enviado_em.isoformat(),
                         })
 

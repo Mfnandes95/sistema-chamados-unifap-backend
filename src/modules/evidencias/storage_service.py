@@ -102,7 +102,10 @@ def validar_metadados(nome_arquivo: str, content_type: str) -> str:
     esperado = TIPOS_PERMITIDOS.get(extensao)
     if esperado is None:
         raise ArquivoInvalido(f"Extensão '{extensao or '?'}' não permitida.")
-    if content_type.lower() != esperado:
+    ct = content_type.strip().lower()
+    if ct == "image/jpg":
+        ct = "image/jpeg"
+    if ct and ct != "application/octet-stream" and ct != esperado:
         raise ArquivoInvalido(f"MIME '{content_type}' incompatível com '{extensao}'.")
     return extensao
 
@@ -118,6 +121,7 @@ class ServicoArmazenamentoEvidencias:
     async def anexar(self, protocolo: str, nome_arquivo: str, content_type: str,
                      leitor: LeitorBytes, ator: UsuarioAutenticado) -> EvidenciaDTO:
         extensao = validar_metadados(nome_arquivo, content_type)
+        mime_canonico = TIPOS_PERMITIDOS[extensao]
         self._registro.verificar_pode_anexar(protocolo, ator)
 
         evidencia_id = str(uuid.uuid4())
@@ -131,7 +135,7 @@ class ServicoArmazenamentoEvidencias:
             async with aiofiles.open(destino, "wb") as arquivo:
                 primeiro = True
                 while bloco := await leitor(TAMANHO_BLOCO):
-                    if primeiro and not assinatura_confere(content_type.lower(), bloco[:16]):
+                    if primeiro and not assinatura_confere(mime_canonico, bloco[:16]):
                         raise ArquivoInvalido("Conteúdo não corresponde ao tipo declarado.")
                     primeiro = False
                     total += len(bloco)
@@ -142,7 +146,7 @@ class ServicoArmazenamentoEvidencias:
                 raise ArquivoInvalido("Arquivo vazio.")
             # V17: se o registro falhar (ex.: conflito de concorrência ou limite), remove o arquivo.
             self._registro.registrar_evidencia(protocolo, Evidencia(
-                evidencia_id, nome_seguro, content_type.lower(), total, str(destino),
+                evidencia_id, nome_seguro, mime_canonico, total, str(destino),
                 ator.id, agora), ator)
         except BaseException:
             if await aiofiles.os.path.exists(destino):
@@ -150,7 +154,7 @@ class ServicoArmazenamentoEvidencias:
             raise
 
         return EvidenciaDTO(id=evidencia_id, protocolo=protocolo, nome_arquivo=nome_seguro,
-                            content_type=content_type.lower(), tamanho_bytes=total,
+                            content_type=mime_canonico, tamanho_bytes=total,
                             enviado_em=agora)
 
     async def anexar_google_drive(
