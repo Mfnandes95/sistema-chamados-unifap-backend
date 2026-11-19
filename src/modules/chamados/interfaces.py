@@ -104,6 +104,9 @@ class IRegistroEvidencias(Protocol):
     def registrar_evidencia(self, protocolo: str, evidencia: Evidencia,
                             ator: UsuarioAutenticado) -> None: ...
 
+    def obter_evidencia(self, protocolo: str, evidencia_id: str,
+                        ator: UsuarioAutenticado) -> Evidencia: ...
+
 
 class IConsultaChamados(Protocol):
     def snapshots(self, filtro: FiltroChamados) -> Sequence[ChamadoSnapshot]: ...

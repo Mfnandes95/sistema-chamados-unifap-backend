@@ -295,6 +295,14 @@ class GestorDeChamado:
         self._repo.salvar(chamado, versao_anterior)
         self._auditar(chamado, ator.id, "EVIDENCIA", chamado.status, evidencia.nome_arquivo)
 
+    def obter_evidencia(self, protocolo: str, evidencia_id: str,
+                        ator: UsuarioAutenticado) -> Evidencia:
+        chamado = self.obter_chamado(protocolo, ator)
+        for ev in chamado.evidencias:
+            if ev.id == evidencia_id:
+                return ev
+        raise RecursoNaoEncontrado("Evidência não encontrada.")
+
     # ------------------------------------------------------------------ Relatórios
     def snapshots(self, filtro: FiltroChamados) -> Sequence[ChamadoSnapshot]:
         return tuple(

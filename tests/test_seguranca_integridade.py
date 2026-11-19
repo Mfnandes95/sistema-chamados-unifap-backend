@@ -16,7 +16,7 @@ from src.modules.autenticacao.schemas import Perfil, UsuarioAutenticado
 from src.modules.autenticacao.service import SENHA_PADRAO_SEED, InMemoryAuthAdapter
 from src.modules.catalogo_locais.service import InMemoryCatalogoAdapter
 from src.modules.chamados.domain.avaliador_prioridade import AvaliadorDePrioridade
-from src.modules.chamados.domain.entities import StatusChamado
+from src.modules.chamados.domain.entities import Evidencia, StatusChamado
 from src.modules.chamados.domain.value_objects import GeradorProtocoloUnifap, Protocolo
 from src.modules.chamados.gestor_service import GestorDeChamado
 from src.modules.chamados.interfaces import FiltroChamados
@@ -24,6 +24,7 @@ from src.modules.chamados.repository import InMemoryRepositorioChamado
 from src.modules.chamados.schemas import AbrirChamadoRequest
 from src.modules.evidencias.storage_service import (
     ServicoArmazenamentoEvidencias,
+    extrair_id_google_drive,
     sanitizar_nome_arquivo,
 )
 from src.modules.notificacoes.service import (
@@ -313,6 +314,10 @@ async def test_v17_sanitizacao_nome_e_limpeza_em_falha_de_registro(tmp_path: Pat
                                 ator: UsuarioAutenticado) -> None:
             raise ConflitoConcorrencia("simulado")
 
+        def obter_evidencia(self, protocolo: str, evidencia_id: str,
+                            ator: UsuarioAutenticado) -> Evidencia:
+            raise ConflitoConcorrencia("simulado")
+
     svc = ServicoArmazenamentoEvidencias(_RegistroFalho(), tmp_path, 1024)
     ator = UsuarioAutenticado(id="u1", matricula="20230001", nome="A", email="a@unifap.br",
                               perfil=Perfil.SOLICITANTE, vinculo_ativo=True)
@@ -461,4 +466,43 @@ async def test_admin_cria_usuario_redefine_senha_e_acompanha_chamados(
                               json={"token": tok_rec, "nova_senha": "OutraSenha@2026"})).status_code == 422
     assert (await client.post("/api/v1/auth/login",
                               json={"matricula": "20249999", "senha": "SenhaRecuperada@2026"})).status_code == 200
+
+
+async def test_evidencia_download_rbac_e_anti_ssrf_google_drive(
+    client: AsyncClient, tokens: H
+) -> None:
+    r_ch = await client.post("/api/v1/chamados", json=CHAMADO_VALIDO, headers=tokens["solicitante"])
+    protocolo = r_ch.json()["protocolo"]
+
+    r_up = await client.post(
+        f"/api/v1/chamados/{protocolo}/evidencias",
+        files={"arquivo": ("comprovacao.png", PNG, "image/png")},
+        headers=tokens["solicitante"],
+    )
+    assert r_up.status_code == 201
+    ev_id = r_up.json()["id"]
+
+    # Dono e Admin conseguem baixar/visualizar a evidência; outro solicitante recebe 404
+    r_dl = await client.get(f"/api/v1/chamados/{protocolo}/evidencias/{ev_id}",
+                            headers=tokens["solicitante"])
+    assert r_dl.status_code == 200 and r_dl.content == PNG
+    assert (await client.get(f"/api/v1/chamados/{protocolo}/evidencias/{ev_id}",
+                             headers=tokens["admin"])).status_code == 200
+    assert (await client.get(f"/api/v1/chamados/{protocolo}/evidencias/{ev_id}",
+                             headers=tokens["solicitante2"])).status_code == 404
+
+    # Validação anti-SSRF no Google Drive
+    assert extrair_id_google_drive("https://drive.google.com/file/d/1AbCdEfGhIjKlMnOpQr/view?usp=sharing") == "1AbCdEfGhIjKlMnOpQr"
+    assert extrair_id_google_drive("https://drive.google.com/open?id=1AbCdEfGhIjKlMnOpQr") == "1AbCdEfGhIjKlMnOpQr"
+    for url_ruim in (
+        "http://169.254.169.254/latest/meta-data/",
+        "https://evil.com/file/d/1AbCdEfGhIjKlMnOpQr/view",
+        "https://drive.google.com/file/d/../../etc/passwd",
+    ):
+        r_ssrf = await client.post(
+            f"/api/v1/chamados/{protocolo}/evidencias/google-drive",
+            json={"url": url_ruim},
+            headers=tokens["solicitante"],
+        )
+        assert r_ssrf.status_code == 422, (url_ruim, r_ssrf.status_code)
 

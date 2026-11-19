@@ -264,6 +264,7 @@ BRIDGE_JS = r"""/* Ponte não-invasiva entre window.DB (frontend) e a API FastAP
           equipe: d.executor_id && catObj ? catObj.setor : '',
           executor: d.executor_id || '',
           anexos: (d.evidencias || []).map(e => ({
+            apiId: e.id,
             nome: e.nome_arquivo,
             tipo: (e.content_type || '').startsWith('video') ? 'video' : 'image',
             tamanho: +(e.tamanho_bytes / 1048576).toFixed(1) || 0.1
@@ -334,11 +335,32 @@ BRIDGE_JS = r"""/* Ponte não-invasiva entre window.DB (frontend) e a API FastAP
       pessoas_afetadas: c.impedeAula ? 30 : 5
     });
     if (r.ok && r.data && r.data.protocolo) {
-      mapa[c.id] = r.data.protocolo;
+      const protocolo = r.data.protocolo;
+      mapa[c.id] = protocolo;
       saveMap(mapa);
-      if (window.UI && UI.toast) {
-        UI.toast('Sincronizado com o backend: ' + r.data.protocolo);
+      const pendentes = (window.UnifapPendingUploads && window.UnifapPendingUploads[c.id]) || [];
+      if (pendentes.length) {
+        delete window.UnifapPendingUploads[c.id];
+        const tok = getToken();
+        for (const item of pendentes) {
+          if (item.raw && tok) {
+            const fd = new FormData();
+            fd.append('arquivo', item.raw, item.name);
+            await fetch('/api/v1/chamados/' + encodeURIComponent(protocolo) + '/evidencias', {
+              method: 'POST', headers: { Authorization: 'Bearer ' + tok }, body: fd
+            });
+          } else if (item.driveUrl) {
+            await api('POST', '/chamados/' + encodeURIComponent(protocolo) + '/evidencias/google-drive', {
+              url: item.driveUrl,
+              nome_arquivo: item.name
+            });
+          }
+        }
       }
+      if (window.UI && UI.toast) {
+        UI.toast('Sincronizado com o backend: ' + protocolo);
+      }
+      await carregarChamadosDoBackend();
     }
   }
 

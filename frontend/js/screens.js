@@ -41,7 +41,7 @@
         </button>`).join('');
       return `<section class="panel">
         <div class="panel-head"><h2 class="h2">Evidências</h2>
-          ${canAdd ? `<label class="btn btn-secondary btn-sm">${ic('attach_file')}Anexar<input type="file" class="sr-only" accept=".jpg,.jpeg,.png,.webp,.mp4" multiple data-addfile></label>` : `<span class="muted small">${c.anexos.length || 'Nenhum'} arquivo${c.anexos.length === 1 ? '' : 's'}</span>`}
+          ${canAdd ? `<div class="row" style="gap:8px"><label class="btn btn-secondary btn-sm">${ic('attach_file')}Dispositivo<input type="file" class="sr-only" accept=".jpg,.jpeg,.png,.webp,.mp4" multiple data-addfile></label><button class="btn btn-secondary btn-sm" type="button" data-adddrive-det>${ic('add_to_drive')}Google Drive</button></div>` : `<span class="muted small">${c.anexos.length || 'Nenhum'} arquivo${c.anexos.length === 1 ? '' : 's'}</span>`}
         </div>
         <div class="panel-body">${c.anexos.length ? `<div class="attach">${items}</div>` : `<p class="muted small">Nenhuma imagem ou vídeo foi anexado.</p>`}</div>
       </section>`;
@@ -86,11 +86,29 @@
         const pv = e.target.closest('[data-preview]');
         if (pv && c) {
           const a = c.anexos[+pv.dataset.preview];
-          dialog({
+          let mediaHtml = `<div class="dlg-preview">${ic(a.tipo === 'video' ? 'movie' : 'image')}</div>`;
+          let objUrl = null;
+          const protoApi = (window.UnifapApi && UnifapApi.protocolos && UnifapApi.protocolos[c.id]) || c.id;
+          const tok = (() => { try { return sessionStorage.getItem('unifap-api-jwt') || ''; } catch (err) { return ''; } })();
+          if (a.apiId && tok) {
+            try {
+              const r = await fetch(`/api/v1/chamados/${encodeURIComponent(protoApi)}/evidencias/${encodeURIComponent(a.apiId)}`, {
+                headers: { Authorization: 'Bearer ' + tok }
+              });
+              if (r.ok) {
+                objUrl = URL.createObjectURL(await r.blob());
+                mediaHtml = a.tipo === 'video'
+                  ? `<video controls style="width:100%;max-height:360px;border-radius:8px;background:#000" src="${objUrl}"></video>`
+                  : `<img src="${objUrl}" alt="${esc(a.nome)}" style="width:100%;max-height:360px;object-fit:contain;border-radius:8px;background:var(--surface-2)">`;
+              }
+            } catch (err) { /* fallback ao ícone */ }
+          }
+          await dialog({
             title: esc(a.nome),
-            body: `<div class="dlg-preview">${ic(a.tipo === 'video' ? 'movie' : 'image')}</div><p class="small">${a.tipo === 'video' ? 'Vídeo' : 'Imagem'}, ${fmt.dec(a.tamanho)} MB. A pré-visualização do arquivo aparece aqui quando o armazenamento estiver conectado.</p>`,
+            body: `${mediaHtml}<p class="small" style="margin-top:10px">${a.tipo === 'video' ? 'Vídeo' : 'Imagem'}, ${fmt.dec(a.tamanho)} MB.</p>`,
             confirm: '', cancel: 'Fechar'
           });
+          if (objUrl) URL.revokeObjectURL(objUrl);
         }
       });
       const cf = $(root, '[data-comment]');
@@ -103,16 +121,70 @@
         DB.save(); toast('Comentário interno registrado.'); rerender();
       });
       const af = $(root, '[data-addfile]');
-      if (af) af.addEventListener('change', () => {
-        const ok = [...af.files].filter(f => Shared.fileError(f) === '');
-        const bad = af.files.length - ok.length;
-        ok.forEach(f => c.anexos.push({ nome: f.name, tipo: f.type.startsWith('video') ? 'video' : 'image', tamanho: +(f.size / 1048576).toFixed(1) || 0.1 }));
-        if (ok.length) {
-          c.historico.push({ em: new Date().toISOString(), autor: me().id, tipo: 'anexo', texto: `${ok.length} evidência${ok.length > 1 ? 's' : ''} anexada${ok.length > 1 ? 's' : ''} ao atendimento.`, publico: true });
-          DB.save(); toast(`${ok.length} arquivo${ok.length > 1 ? 's' : ''} anexado${ok.length > 1 ? 's' : ''}.`);
+      if (af) af.addEventListener('change', async () => {
+        const selecionados = [...af.files];
+        const ok = selecionados.filter(f => Shared.fileError(f) === '');
+        const bad = selecionados.length - ok.length;
+        const protoApi = (window.UnifapApi && UnifapApi.protocolos && UnifapApi.protocolos[c.id]) || c.id;
+        const tok = (() => { try { return sessionStorage.getItem('unifap-api-jwt') || ''; } catch (err) { return ''; } })();
+        let enviados = 0;
+        for (const f of ok) {
+          let apiId = null;
+          if (tok) {
+            try {
+              const fd = new FormData();
+              fd.append('arquivo', f, f.name);
+              const r = await fetch(`/api/v1/chamados/${encodeURIComponent(protoApi)}/evidencias`, {
+                method: 'POST', headers: { Authorization: 'Bearer ' + tok }, body: fd
+              });
+              if (r.ok) { const d = await r.json(); apiId = d.id; }
+              else { const d = await r.json().catch(() => ({})); toast(d.mensagem || `Falha ao enviar ${f.name}.`, 'err'); continue; }
+            } catch (err) { toast(`Erro de conexão ao enviar ${f.name}.`, 'err'); continue; }
+          }
+          c.anexos.push({ apiId, nome: f.name, tipo: f.type.startsWith('video') ? 'video' : 'image', tamanho: +(f.size / 1048576).toFixed(1) || 0.1 });
+          enviados += 1;
+        }
+        if (enviados) {
+          c.historico.push({ em: new Date().toISOString(), autor: me().id, tipo: 'anexo', texto: `${enviados} evidência${enviados > 1 ? 's' : ''} anexada${enviados > 1 ? 's' : ''} ao atendimento.`, publico: true });
+          DB.save(); toast(`${enviados} arquivo${enviados > 1 ? 's' : ''} anexado${enviados > 1 ? 's' : ''}.`);
         }
         if (bad) toast(`${bad} arquivo${bad > 1 ? 's' : ''} recusado${bad > 1 ? 's' : ''}: formato ou tamanho fora do limite.`, 'err');
         rerender();
+      });
+      const gdDet = $(root, '[data-adddrive-det]');
+      if (gdDet) gdDet.addEventListener('click', async () => {
+        const fd = await dialog({
+          title: 'Adicionar foto ou vídeo do Google Drive',
+          body: `<p>Cole o link compartilhado do arquivo no Google Drive (configurado como <b>Qualquer pessoa com o link</b>).</p>
+            <div class="field"><label for="gd-url">Link do Google Drive</label><input class="input" id="gd-url" name="url" type="url" placeholder="https://drive.google.com/file/d/.../view"></div>`,
+          confirm: 'Anexar do Drive',
+          validate: (vals, form) => {
+            const u = vals.get('url').trim();
+            const el = form.querySelector('#gd-url');
+            const m = !/^https:\/\/drive\.google\.com\/(file\/d\/|open\?id=|uc\?)/.test(u) ? 'Informe um link válido do Google Drive (https://drive.google.com/...).' : '';
+            fieldError(el, m);
+            if (m) el.focus();
+            return m;
+          }
+        });
+        if (!fd) return;
+        const protoApi = (window.UnifapApi && UnifapApi.protocolos && UnifapApi.protocolos[c.id]) || c.id;
+        const tok = (() => { try { return sessionStorage.getItem('unifap-api-jwt') || ''; } catch (err) { return ''; } })();
+        try {
+          const r = await fetch(`/api/v1/chamados/${encodeURIComponent(protoApi)}/evidencias/google-drive`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tok },
+            body: JSON.stringify({ url: fd.get('url').trim() })
+          });
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok) return toast(d.mensagem || 'Não foi possível importar do Google Drive.', 'err');
+          c.anexos.push({ apiId: d.id, nome: d.nome_arquivo, tipo: (d.content_type || '').startsWith('video') ? 'video' : 'image', tamanho: +(d.tamanho_bytes / 1048576).toFixed(1) || 0.1 });
+          c.historico.push({ em: new Date().toISOString(), autor: me().id, tipo: 'anexo', texto: `Evidência anexada via Google Drive (${d.nome_arquivo}).`, publico: true });
+          DB.save(); toast(`Evidência "${d.nome_arquivo}" importada do Google Drive.`);
+          rerender();
+        } catch (err) {
+          toast('Erro de conexão ao importar do Google Drive.', 'err');
+        }
       });
     },
     norm: s => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase(),
@@ -448,10 +520,14 @@
             <p class="hint" style="margin:4px 0 12px">JPG, PNG ou WEBP de até ${Shared.LIMITES.image} MB; MP4 de até ${Shared.LIMITES.video} MB.</p>
             <label class="drop" data-drop>
               ${ic('add_photo_alternate')}
-              <b>Arraste os arquivos para cá ou escolha do dispositivo</b>
+              <b>Arraste os arquivos para cá ou escolha do celular / computador</b>
               <span class="small muted">Fotos ajudam a equipe a levar o material certo.</span>
               <input type="file" class="sr-only" accept=".jpg,.jpeg,.png,.webp,.mp4" multiple data-file>
             </label>
+            <div class="row" style="margin-top:10px">
+              <button class="btn btn-secondary btn-sm" type="button" data-adddrive>${ic('add_to_drive')}Adicionar do Google Drive</button>
+              <span class="hint">Ou cole o link compartilhado de uma foto/vídeo do Drive.</span>
+            </div>
             <ul class="files" data-files></ul>
           </div>
           <div class="sticky-actions" data-actions>
@@ -562,15 +638,37 @@
       const list = $(root, '[data-files]');
       const drawFiles = () => {
         list.innerHTML = files.map((f, i) => `<li class="file${f.err ? ' bad' : ''}">
-          <span class="ico">${ic(f.err ? 'error' : f.video ? 'movie' : 'image')}</span>
-          <span style="min-width:0"><b>${esc(f.name)}</b><small>${f.err ? esc(f.err) : `${f.video ? 'Vídeo' : 'Imagem'}, ${fmt.dec(f.size / 1048576)} MB`}</small></span>
+          <span class="ico">${ic(f.err ? 'error' : f.driveUrl ? 'add_to_drive' : f.video ? 'movie' : 'image')}</span>
+          <span style="min-width:0"><b>${esc(f.name)}</b><small>${f.err ? esc(f.err) : f.driveUrl ? 'Link do Google Drive (será importado ao enviar)' : `${f.video ? 'Vídeo' : 'Imagem'}, ${fmt.dec(f.size / 1048576)} MB`}</small></span>
           <button class="iconbtn" type="button" data-rm="${i}" aria-label="Remover ${esc(f.name)}">${ic('close')}</button></li>`).join('');
       };
       const addFiles = fl => {
-        [...fl].forEach(f => files.push({ name: f.name, size: f.size, video: /\.mp4$/i.test(f.name), err: Shared.fileError(f) }));
+        [...fl].forEach(f => files.push({ name: f.name, size: f.size, video: /\.mp4$/i.test(f.name), err: Shared.fileError(f), raw: f }));
         drawFiles();
       };
       $(root, '[data-file]').addEventListener('change', e => { addFiles(e.target.files); e.target.value = ''; });
+      $(root, '[data-adddrive]').addEventListener('click', async () => {
+        const fd = await dialog({
+          title: 'Adicionar do Google Drive',
+          body: `<p>Cole o link compartilhado da foto ou vídeo no Google Drive (<b>Qualquer pessoa com o link</b>).</p>
+            <div class="field"><label for="gd-abrir-url">Link do Google Drive</label><input class="input" id="gd-abrir-url" name="url" type="url" placeholder="https://drive.google.com/file/d/.../view"></div>
+            <div class="field"><label for="gd-abrir-nome">Nome do arquivo <span class="opt">(opcional)</span></label><input class="input" id="gd-abrir-nome" name="nome" placeholder="Ex.: foto-tomada.jpg"></div>`,
+          confirm: 'Adicionar',
+          validate: (vals, dlgForm) => {
+            const u = vals.get('url').trim();
+            const el = dlgForm.querySelector('#gd-abrir-url');
+            const m = !/^https:\/\/drive\.google\.com\/(file\/d\/|open\?id=|uc\?)/.test(u) ? 'Informe um link válido do Google Drive (https://drive.google.com/...).' : '';
+            fieldError(el, m);
+            if (m) el.focus();
+            return m;
+          }
+        });
+        if (!fd) return;
+        const url = fd.get('url').trim();
+        const nome = fd.get('nome').trim() || 'Arquivo do Google Drive';
+        files.push({ name: nome, size: 0, video: /\.mp4$/i.test(nome), err: '', driveUrl: url });
+        drawFiles();
+      });
       const drop = $(root, '[data-drop]');
       drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
       drop.addEventListener('dragleave', () => drop.classList.remove('over'));
@@ -625,6 +723,10 @@
           const prioridade = DB.calcPrioridade(cat, sel('impede').checked);
           const id = DB.novoProtocolo();
           const agora = DB.HOJE.toISOString().slice(0, 11) + new Date().toTimeString().slice(0, 8);
+          if (okFiles.length) {
+            window.UnifapPendingUploads = window.UnifapPendingUploads || {};
+            window.UnifapPendingUploads[id] = okFiles.slice();
+          }
           DB.s.chamados.unshift({
             id, categoria: cat, ambiente: sel('ambiente').value, autor: u.id, impedeAula: sel('impede').checked, prioridade, estado: 'triagem',
             descricao: dv, criadoEm: new Date(agora).toISOString(), equipe: '', executor: '',
