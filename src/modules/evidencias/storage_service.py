@@ -111,6 +111,15 @@ def validar_metadados(nome_arquivo: str, content_type: str) -> str:
     return extensao
 
 
+def _validar_url_redirect_drive(url: httpx.URL) -> None:
+    """Anti-SSRF por salto: valida esquema HTTPS e host permitido antes de seguir cada redirect."""
+    host = (url.host or "").lower()
+    if url.scheme != "https" or not (
+        host in _HOSTS_REDIRECT_DRIVE or host.endswith(".googleusercontent.com")
+    ):
+        raise ValidacaoDominio("Redirecionamento fora do domínio do Google Drive.")
+
+
 class ServicoArmazenamentoEvidencias:
     def __init__(
         self,
@@ -199,52 +208,82 @@ class ServicoArmazenamentoEvidencias:
         file_id = extrair_id_google_drive(url)
         self._registro.verificar_pode_anexar(protocolo, ator)
 
-        url_download = f"https://drive.google.com/uc?export=download&id={file_id}"
+        url_atual = httpx.URL(f"https://drive.google.com/uc?export=download&id={file_id}")
         evidencia_id = str(uuid.uuid4())
-        pasta = self._diretorio / protocolo
-        await aiofiles.os.makedirs(pasta, exist_ok=True)
-        temp_destino = pasta / f"{evidencia_id}.tmp"
         destino: Path | None = None
+        temp_destino: Path | None = None
+        dados_mem = bytearray()
         total = 0
         mime_detectado: str | None = None
 
         try:
-            async with httpx.AsyncClient(follow_redirects=True, timeout=20.0) as client:
-                async with client.stream("GET", url_download) as resp:
-                    host_final = (resp.url.host or "").lower()
-                    if not (host_final in _HOSTS_REDIRECT_DRIVE
-                            or host_final.endswith(".googleusercontent.com")):
-                        raise ValidacaoDominio("Redirecionamento fora do domínio do Google Drive.")
-                    if resp.status_code != 200:
-                        raise ArquivoInvalido(
-                            "Não foi possível baixar do Google Drive. Verifique se o link está "
-                            "compartilhado como 'Qualquer pessoa com o link'."
-                        )
-                    async with aiofiles.open(temp_destino, "wb") as arquivo:
-                        primeiro = True
-                        async for bloco in resp.aiter_bytes(TAMANHO_BLOCO):
-                            if not bloco:
-                                continue
-                            if primeiro:
-                                mime_detectado = detectar_mime_por_assinatura(bloco[:16])
-                                if mime_detectado is None:
-                                    raise ArquivoInvalido(
-                                        "O arquivo do Google Drive não é uma imagem (JPG/PNG/WEBP) "
-                                        "ou vídeo MP4 acessível publicamente."
+            async with httpx.AsyncClient(follow_redirects=False, timeout=20.0) as client:
+                # Valida cada salto de redirecionamento antes de segui-lo (anti-SSRF estrito).
+                for _ in range(5):
+                    _validar_url_redirect_drive(url_atual)
+                    async with client.stream("GET", url_atual) as resp:
+                        if resp.status_code in (301, 302, 303, 307, 308):
+                            loc = resp.headers.get("location")
+                            if not loc:
+                                raise ArquivoInvalido("Redirecionamento inválido do Google Drive.")
+                            url_atual = url_atual.join(loc)
+                            continue
+                        if resp.status_code != 200:
+                            raise ArquivoInvalido(
+                                "Não foi possível baixar do Google Drive. Verifique se o link está "
+                                "compartilhado como 'Qualquer pessoa com o link'."
+                            )
+                        if self._supabase is not None:
+                            primeiro = True
+                            async for bloco in resp.aiter_bytes(TAMANHO_BLOCO):
+                                if not bloco:
+                                    continue
+                                if primeiro:
+                                    mime_detectado = detectar_mime_por_assinatura(bloco[:16])
+                                    if mime_detectado is None:
+                                        raise ArquivoInvalido(
+                                            "O arquivo do Google Drive não é uma imagem "
+                                            "(JPG/PNG/WEBP) ou vídeo MP4 acessível publicamente."
+                                        )
+                                    primeiro = False
+                                total += len(bloco)
+                                if total > self._limite:
+                                    raise ArquivoMuitoGrande(
+                                        f"Arquivo excede {self._limite} bytes."
                                     )
-                                primeiro = False
-                            total += len(bloco)
-                            if total > self._limite:
-                                raise ArquivoMuitoGrande(f"Arquivo excede {self._limite} bytes.")
-                            await arquivo.write(bloco)
+                                dados_mem.extend(bloco)
+                        else:
+                            pasta = self._diretorio / protocolo
+                            await aiofiles.os.makedirs(pasta, exist_ok=True)
+                            temp_destino = pasta / f"{evidencia_id}.tmp"
+                            async with aiofiles.open(temp_destino, "wb") as arquivo:
+                                primeiro = True
+                                async for bloco in resp.aiter_bytes(TAMANHO_BLOCO):
+                                    if not bloco:
+                                        continue
+                                    if primeiro:
+                                        mime_detectado = detectar_mime_por_assinatura(bloco[:16])
+                                        if mime_detectado is None:
+                                            raise ArquivoInvalido(
+                                                "O arquivo do Google Drive não é uma imagem "
+                                                "(JPG/PNG/WEBP) ou vídeo MP4 acessível "
+                                                "publicamente."
+                                            )
+                                        primeiro = False
+                                    total += len(bloco)
+                                    if total > self._limite:
+                                        raise ArquivoMuitoGrande(
+                                            f"Arquivo excede {self._limite} bytes."
+                                        )
+                                    await arquivo.write(bloco)
+                        break
+                else:
+                    raise ValidacaoDominio("Excesso de redirecionamentos no link do Google Drive.")
 
             if total == 0 or mime_detectado is None:
                 raise ArquivoInvalido("Arquivo vazio no Google Drive.")
 
             extensao = _EXT_POR_MIME[mime_detectado]
-            destino = pasta / f"{evidencia_id}{extensao}"
-            await aiofiles.os.rename(temp_destino, destino)
-
             base_nome = sanitizar_nome_arquivo(nome_arquivo or "") or f"google-drive-{file_id[:8]}"
             if not base_nome.lower().endswith(extensao):
                 base_nome = f"{PurePath(base_nome).stem}{extensao}"
@@ -252,10 +291,9 @@ class ServicoArmazenamentoEvidencias:
             agora = self._relogio()
             if self._supabase is not None:
                 objeto_path = f"{protocolo}/{evidencia_id}{extensao}"
-                dados_arq = destino.read_bytes()
-                await aiofiles.os.remove(destino)
-                destino = None
-                self._supabase.upload_storage(self._bucket, objeto_path, dados_arq, mime_detectado)
+                self._supabase.upload_storage(
+                    self._bucket, objeto_path, bytes(dados_mem), mime_detectado
+                )
                 try:
                     self._registro.registrar_evidencia(protocolo, Evidencia(
                         evidencia_id, base_nome, mime_detectado, total, objeto_path, ator.id, agora
@@ -264,6 +302,10 @@ class ServicoArmazenamentoEvidencias:
                     self._supabase.remover_storage(self._bucket, objeto_path)
                     raise
             else:
+                assert temp_destino is not None
+                destino = (self._diretorio / protocolo) / f"{evidencia_id}{extensao}"
+                await aiofiles.os.rename(temp_destino, destino)
+                temp_destino = None
                 self._registro.registrar_evidencia(protocolo, Evidencia(
                     evidencia_id, base_nome, mime_detectado, total, str(destino), ator.id, agora
                 ), ator)
@@ -272,13 +314,13 @@ class ServicoArmazenamentoEvidencias:
                 content_type=mime_detectado, tamanho_bytes=total, enviado_em=agora
             )
         except httpx.HTTPError as exc:
-            if await aiofiles.os.path.exists(temp_destino):
+            if temp_destino and await aiofiles.os.path.exists(temp_destino):
                 await aiofiles.os.remove(temp_destino)
             if destino and await aiofiles.os.path.exists(destino):
                 await aiofiles.os.remove(destino)
             raise ArquivoInvalido("Falha ao baixar o arquivo do Google Drive.") from exc
         except BaseException:
-            if await aiofiles.os.path.exists(temp_destino):
+            if temp_destino and await aiofiles.os.path.exists(temp_destino):
                 await aiofiles.os.remove(temp_destino)
             if destino and await aiofiles.os.path.exists(destino):
                 await aiofiles.os.remove(destino)

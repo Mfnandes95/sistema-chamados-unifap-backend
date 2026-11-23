@@ -1,4 +1,5 @@
 from typing import Annotated
+from urllib.parse import quote
 
 from fastapi import APIRouter, File, Path, UploadFile, status
 from fastapi.responses import FileResponse, Response
@@ -47,10 +48,16 @@ def baixar_evidencia(
 ) -> Response:
     arq = c.evidencias.obter_arquivo(protocolo, evidencia_id, ator)
     if arq.conteudo is not None:
+        nome_ascii = arq.nome_arquivo.replace('"', "").replace("\\", "").replace(";", "_")
+        nome_utf8 = quote(arq.nome_arquivo, safe="")
         return Response(
             content=arq.conteudo,
             media_type=arq.content_type,
-            headers={"Content-Disposition": f'inline; filename="{arq.nome_arquivo}"'},
+            headers={
+                "Content-Disposition": (
+                    f'inline; filename="{nome_ascii}"; filename*=UTF-8\'\'{nome_utf8}'
+                )
+            },
         )
     assert arq.caminho is not None
     return FileResponse(

@@ -188,7 +188,7 @@ def criar_app(settings: Settings | None = None, container: Container | None = No
             return {"status": "ok"}
         return {"status": "ok", "persistencia": "memoria", "banco_conectado": True}
 
-    montar_frontend(app, habilitar_bridge_demo=not settings.producao)
+    montar_frontend(app)
 
     return app
 

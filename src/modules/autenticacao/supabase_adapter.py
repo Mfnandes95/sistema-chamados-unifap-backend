@@ -167,7 +167,11 @@ class SupabaseAuthAdapter:
         linhas = self._client.select(
             "perfis", {"select": "*", "id": f"eq.{usuario_id}", "limit": "1"}
         )
-        if not linhas or not self._validar_credenciais(linhas[0], senha_atual):
+        if not linhas:
+            raise NaoAutenticado("Senha atual incorreta.")
+        meta = self._client.obter_app_metadata_auth(usuario_id)
+        ja_alterou = bool(meta.get("senha_alterada", False))
+        if not self._validar_credenciais(linhas[0], senha_atual, ja_alterou_senha=ja_alterou):
             raise NaoAutenticado("Senha atual incorreta.")
         validar_forca_senha(
             nova_senha,

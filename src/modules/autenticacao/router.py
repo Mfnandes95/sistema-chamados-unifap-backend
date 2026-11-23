@@ -7,7 +7,7 @@ from src.modules.autenticacao.dependencies import (
     Admin,
     SessaoAtual,
     UsuarioAtivoParaTroca,
-    UsuarioAtual,
+    UsuarioParaTroca,
 )
 from src.modules.autenticacao.schemas import (
     AlterarPropriaSenhaRequest,
@@ -66,7 +66,7 @@ def logout(sessao: SessaoAtual, container: ContainerDep) -> Response:
 
 
 @router.get("/api/v1/auth/me", response_model=UsuarioAutenticado)
-def me(usuario: UsuarioAtual) -> UsuarioAutenticado:
+def me(usuario: UsuarioParaTroca) -> UsuarioAutenticado:
     return usuario
 
 

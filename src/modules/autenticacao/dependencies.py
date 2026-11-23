@@ -42,24 +42,43 @@ def obter_sessao(
 SessaoAtual = Annotated[Sessao, Depends(obter_sessao)]
 
 
+def obter_usuario_para_troca(sessao: SessaoAtual) -> UsuarioAutenticado:
+    """Permite consultar /auth/me e trocar a senha mesmo com deve_redefinir_senha=True."""
+    return sessao.usuario
+
+
+UsuarioParaTroca = Annotated[UsuarioAutenticado, Depends(obter_usuario_para_troca)]
+
+
 def obter_usuario_atual(sessao: SessaoAtual) -> UsuarioAutenticado:
+    if sessao.usuario.deve_redefinir_senha:
+        raise AcessoNegado("É obrigatório redefinir sua senha antes de continuar.")
     return sessao.usuario
 
 
 UsuarioAtual = Annotated[UsuarioAutenticado, Depends(obter_usuario_atual)]
-"""Somente leitura: usuários com vínculo inativo ainda consultam seus próprios chamados."""
+"""Somente leitura: usuários com vínculo inativo ainda consultam seus próprios chamados,
+mas usuários com redefinição de senha pendente ficam bloqueados até concluírem a troca."""
 
 
 def _exigir(
     *perfis: Perfil, permitir_troca_pendente: bool = False
 ) -> Callable[[UsuarioAutenticado], UsuarioAutenticado]:
+    if permitir_troca_pendente:
+        def guard_troca(usuario: UsuarioParaTroca) -> UsuarioAutenticado:
+            if usuario.perfil not in perfis:
+                raise AcessoNegado("Perfil sem permissão para esta operação.")
+            if not usuario.vinculo_ativo:
+                raise AcessoNegado("RN02: vínculo institucional inativo.")
+            return usuario
+
+        return guard_troca
+
     def guard(usuario: UsuarioAtual) -> UsuarioAutenticado:
         if usuario.perfil not in perfis:
             raise AcessoNegado("Perfil sem permissão para esta operação.")
         if not usuario.vinculo_ativo:
             raise AcessoNegado("RN02: vínculo institucional inativo.")
-        if usuario.deve_redefinir_senha and not permitir_troca_pendente:
-            raise AcessoNegado("É obrigatório redefinir sua senha antes de continuar.")
         return usuario
 
     return guard

@@ -76,10 +76,14 @@ async def test_v15_v21_cabecalhos_seguranca_docs_e_bridge_desabilitados_em_produ
         assert (await c.get("/openapi.json")).status_code == 404
         r_info = await c.get("/api/v1/info")
         assert r_info.status_code == 200 and "docs" not in r_info.json()
-        # V21: em produção, frontend não injeta /bridge.js com senha demo
+        # V21: em produção, /bridge.js é servido sem credenciais/senhas de demonstração embutidas
         r_front = await c.get("/")
-        assert r_front.status_code == 200 and "/bridge.js" not in r_front.text
-        assert (await c.get("/bridge.js")).status_code == 404
+        assert r_front.status_code == 200 and "/bridge.js" in r_front.text
+        r_bridge = await c.get("/bridge.js")
+        assert r_bridge.status_code == 200
+        assert "SENHA_SEED" not in r_bridge.text
+        assert "Unifap@2026" not in r_bridge.text
+        assert "MATRICULAS_" not in r_bridge.text
         assert (await c.get("/js/app.js")).status_code == 200
 
 
@@ -446,7 +450,10 @@ async def test_admin_cria_usuario_redefine_senha_e_acompanha_chamados(
                                json={"matricula": "20249999", "senha": "SenhaAdmin@2026"})
     assert r_log2.status_code == 200 and r_log2.json()["deve_redefinir_senha"] is True
     h_novo2 = {"Authorization": f"Bearer {r_log2.json()['access_token']}"}
-    # Enquanto não trocar a senha, operações de escrita são bloqueadas com 403
+    # Enquanto não trocar a senha, leitura e escrita de dados são bloqueadas com 403,
+    # mas /auth/me continua acessível para o fluxo de troca obrigatória no frontend.
+    assert (await client.get("/api/v1/auth/me", headers=h_novo2)).status_code == 200
+    assert (await client.get("/api/v1/chamados", headers=h_novo2)).status_code == 403
     assert (await client.post("/api/v1/chamados", json=CHAMADO_VALIDO,
                               headers=h_novo2)).status_code == 403
     # Não aceita repetir a mesma senha

@@ -19,23 +19,6 @@ BRIDGE_JS = r"""/* Ponte não-invasiva entre window.DB (frontend) e a API FastAP
 
   const TOKEN_KEY = 'unifap-api-jwt';
   const MAP_KEY = 'unifap-api-protocolos';
-  const SENHA_SEED = 'Unifap@2026';
-
-  // Mapeamento dos perfis do protótipo para as matrículas da API (memória ou Supabase)
-  const MATRICULAS_MEMORIA = {
-    gestor: '40000001',
-    executor_ti: '30000002',
-    executor: '30000001',
-    solicitante: '20230001',
-    inativo: '20190002'
-  };
-  const MATRICULAS_SUPABASE = {
-    gestor: '1987654',
-    executor_ti: '1987654',
-    executor: '1987654',
-    solicitante: '2021001234',
-    inativo: '2021001234'
-  };
 
   let modoPersistencia = 'memoria';
   let catalogoLocais = [];
@@ -144,19 +127,6 @@ BRIDGE_JS = r"""/* Ponte não-invasiva entre window.DB (frontend) e a API FastAP
       return achada.id;
     }
     return 'ELETRICA';
-  }
-
-  function matriculaParaUsuario(u) {
-    if (!u) return null;
-    const mapa = modoPersistencia === 'supabase' ? MATRICULAS_SUPABASE : MATRICULAS_MEMORIA;
-    if (!u.vinculoAtivo) return mapa.inativo;
-    if (u.perfis.includes('gestor') || u.perfis.includes('admin') || u.perfis.includes('reitoria')) {
-      return mapa.gestor;
-    }
-    if (u.perfis.includes('executor')) {
-      return (u.setor || '').toLowerCase().includes('tecnologia') ? mapa.executor_ti : mapa.executor;
-    }
-    return mapa.solicitante;
   }
 
   function executorIdApi(uId) {
@@ -718,14 +688,8 @@ BRIDGE_JS = r"""/* Ponte não-invasiva entre window.DB (frontend) e a API FastAP
 def montar_frontend(
     app: FastAPI,
     diretorio: Path = FRONTEND_DIR,
-    *,
-    habilitar_bridge_demo: bool = True,
 ) -> bool:
-    """Registra rotas do frontend se o diretório existir, sem alterar arquivos originais.
-
-    V21: em produção (`habilitar_bridge_demo=False`), não injeta `/bridge.js` com
-    auto-login/senha de demonstração.
-    """
+    """Registra rotas do frontend estático e a ponte `/bridge.js` sem credenciais embutidas."""
     index_path = diretorio / "index.html"
     if not index_path.is_file():
         return False
@@ -733,21 +697,19 @@ def montar_frontend(
     html_original = index_path.read_text(encoding="utf-8")
     marcador = '<script src="js/data.js?v=24"></script>'
     injetado = marcador + '\n  <script src="/bridge.js"></script>'
-    html_integrado = (
+    html_servido = (
         html_original.replace(marcador, injetado, 1)
         if marcador in html_original
         else html_original.replace("</body>", '  <script src="/bridge.js"></script>\n</body>', 1)
     )
-    html_servido = html_integrado if habilitar_bridge_demo else html_original
 
     @app.get("/", include_in_schema=False)
     def frontend_index() -> HTMLResponse:
         return HTMLResponse(content=html_servido)
 
-    if habilitar_bridge_demo:
-        @app.get("/bridge.js", include_in_schema=False)
-        def frontend_bridge() -> Response:
-            return Response(content=BRIDGE_JS, media_type="application/javascript; charset=utf-8")
+    @app.get("/bridge.js", include_in_schema=False)
+    def frontend_bridge() -> Response:
+        return Response(content=BRIDGE_JS, media_type="application/javascript; charset=utf-8")
 
     for pasta in ("css", "js", "assets"):
         sub = diretorio / pasta
