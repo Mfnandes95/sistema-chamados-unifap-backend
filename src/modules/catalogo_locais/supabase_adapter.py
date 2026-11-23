@@ -41,9 +41,18 @@ class SupabaseCatalogoAdapter:
         self._client = client
 
     def _carregar_locais(self) -> tuple[dict[str, LocalDTO], dict[str, str]]:
+        campi = {
+            str(c["id"]): str(c.get("nome") or "Campus")
+            for c in self._client.select("campi", {"select": "id,nome", "ativo": "eq.true"})
+        }
+        blocos_raw = self._client.select(
+            "blocos", {"select": "id,nome,codigo,campus_id", "ativo": "eq.true"}
+        )
         blocos = {
-            str(b["id"]): str(b.get("codigo") or b.get("nome") or "BLOCO")
-            for b in self._client.select("blocos", {"select": "id,nome,codigo", "ativo": "eq.true"})
+            str(b["id"]): str(b.get("codigo") or b.get("nome") or "BLOCO") for b in blocos_raw
+        }
+        campus_do_bloco = {
+            str(b["id"]): campi.get(str(b.get("campus_id") or "")) for b in blocos_raw
         }
         andares = {
             str(a["id"]): (str(a["bloco_id"]), int(a.get("ordem") or 0))
@@ -57,7 +66,8 @@ class SupabaseCatalogoAdapter:
         uuid_por_codigo: dict[str, str] = {}
         for amb in ambientes:
             andar_info = andares.get(str(amb["andar_id"]))
-            bloco_nome = blocos.get(andar_info[0], "BLOCO") if andar_info else "BLOCO"
+            bloco_id = andar_info[0] if andar_info else ""
+            bloco_nome = blocos.get(bloco_id, "BLOCO")
             andar_ordem = max(0, min(20, andar_info[1])) if andar_info else 0
             codigo = str(amb["codigo"]).upper()
             dto = LocalDTO(
@@ -66,6 +76,7 @@ class SupabaseCatalogoAdapter:
                 andar=andar_ordem,
                 nome=str(amb["nome"]),
                 tipo=_mapear_tipo_local(str(amb.get("tipo_ambiente") or "")),
+                campus=campus_do_bloco.get(bloco_id),
             )
             por_codigo[codigo] = dto
             uuid_por_codigo[codigo] = str(amb["id"])

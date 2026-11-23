@@ -750,7 +750,7 @@
         desc.value = r.descricao || ''; sel('impede').checked = !!r.impedeAula; updPrio();
       }
 
-      form.addEventListener('submit', e => {
+      form.addEventListener('submit', async e => {
         e.preventDefault();
         let first = null;
         const flag = (el, m) => { fieldError(el, m); if (m && !first) first = el; };
@@ -775,35 +775,69 @@
         }
         if (first) { first.focus(); return; }
 
-        // envio simulado com progresso
         const btn = $(root, '[data-submit]'), status = $(root, '[data-status]');
-        btn.disabled = true; btn.innerHTML = `<span class="spin" aria-hidden="true"></span>Enviando`;
         const okFiles = files.filter(f => !f.err);
-        let p = 0;
-        status.innerHTML = `<span style="display:inline-grid;gap:6px;min-width:180px">${okFiles.length ? 'Enviando anexos' : 'Registrando chamado'}<span class="progress"><i style="--p:0%"></i></span></span>`;
-        const bar = status.querySelector('i');
-        const timer = setInterval(() => {
-          p = Math.min(100, p + (okFiles.length ? 12 : 30));
-          bar.style.setProperty('--p', p + '%');
-          if (p < 100) return;
-          clearInterval(timer);
-          const u = me();
-          const prioridade = DB.calcPrioridade(cat, sel('impede').checked);
-          const id = DB.novoProtocolo();
-          const agora = DB.HOJE.toISOString().slice(0, 11) + new Date().toTimeString().slice(0, 8);
+        btn.disabled = true;
+        btn.innerHTML = `<span class="spin" aria-hidden="true"></span>Enviando`;
+        status.innerHTML = `<span style="display:inline-grid;gap:6px;min-width:180px">${okFiles.length ? 'Salvando chamado e enviando anexos...' : 'Registrando chamado no servidor...'}<span class="progress"><i style="--p:45%"></i></span></span>`;
+
+        const restaurarBotao = () => {
+          btn.disabled = false;
+          btn.innerHTML = `${ic('send')}Enviar chamado`;
+          status.innerHTML = '';
+        };
+
+        const u = me();
+        const ambId = sel('ambiente').value;
+        const impedeAula = sel('impede').checked;
+        let id = null;
+        let prioridade = DB.calcPrioridade(cat, impedeAula);
+        let criadoEm = new Date().toISOString();
+        let anexosSalvos = okFiles.map(f => ({ nome: f.name, tipo: f.video ? 'video' : 'image', tamanho: +(f.size / 1048576).toFixed(1) || 0.1 }));
+
+        if (window.UnifapApi && typeof UnifapApi.criarChamado === 'function') {
+          let res;
+          try {
+            res = await UnifapApi.criarChamado({
+              categoria: cat,
+              ambiente: ambId,
+              impedeAula,
+              descricao: dv,
+              arquivos: okFiles
+            });
+          } catch (err) {
+            res = { ok: false, mensagem: 'Erro de comunicação ao registrar o chamado. Seus dados foram mantidos.' };
+          }
+          if (!res || !res.ok || !res.protocolo) {
+            restaurarBotao();
+            toast((res && res.mensagem) || 'Não foi possível salvar o chamado no servidor. Tente novamente.', 'err');
+            return;
+          }
+          id = res.protocolo;
+          if (res.prioridade) prioridade = res.prioridade;
+          if (res.criadoEm) criadoEm = res.criadoEm;
+          if (Array.isArray(res.anexos)) anexosSalvos = res.anexos;
+          if (res.falhas) {
+            toast(`${res.falhas} anexo(s) não puderam ser enviados. Você pode anexá-los novamente nos detalhes do chamado.`, 'err');
+          }
+        } else {
+          id = DB.novoProtocolo();
           if (okFiles.length) {
             window.UnifapPendingUploads = window.UnifapPendingUploads || {};
             window.UnifapPendingUploads[id] = okFiles.slice();
           }
-          DB.s.chamados.unshift({
-            id, categoria: cat, ambiente: sel('ambiente').value, autor: u.id, impedeAula: sel('impede').checked, prioridade, estado: 'triagem',
-            descricao: dv, criadoEm: new Date(agora).toISOString(), equipe: '', executor: '',
-            anexos: okFiles.map(f => ({ nome: f.name, tipo: f.video ? 'video' : 'image', tamanho: +(f.size / 1048576).toFixed(1) || 0.1 })),
-            historico: [{ em: new Date(agora).toISOString(), autor: u.id, tipo: 'estado', texto: `Chamado aberto. Prioridade ${PRIORIDADES[prioridade].label.toLowerCase()} calculada${sel('impede').checked ? ': ocorrência impede atividade letiva' : ''}.`, publico: true }]
-          });
-          DB.save();
-          location.hash = `#/confirmacao/${id}`;
-        }, 140);
+        }
+
+        const bar = status.querySelector('i');
+        if (bar) bar.style.setProperty('--p', '100%');
+        DB.s.chamados.unshift({
+          id, categoria: cat, ambiente: ambId, autor: u.id, impedeAula, prioridade, estado: 'triagem',
+          descricao: dv, criadoEm, equipe: '', executor: '',
+          anexos: anexosSalvos,
+          historico: [{ em: criadoEm, autor: u.id, tipo: 'estado', texto: `Chamado aberto. Prioridade ${PRIORIDADES[prioridade].label.toLowerCase()} calculada${impedeAula ? ': ocorrência impede atividade letiva' : ''}.`, publico: true }]
+        });
+        DB.save();
+        location.hash = `#/confirmacao/${id}`;
       });
     }
   };

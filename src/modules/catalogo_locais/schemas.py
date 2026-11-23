@@ -18,6 +18,7 @@ class LocalDTO(BaseModel):
     andar: int = Field(ge=0, le=20)
     nome: str
     tipo: TipoLocal
+    campus: str | None = None
 
 
 class CategoriaDTO(BaseModel):

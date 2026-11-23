@@ -51,9 +51,22 @@ BRIDGE_JS = r"""/* Ponte não-invasiva entre window.DB (frontend) e a API FastAP
     } catch (e) { /* segue padrao */ }
   }
 
+  function normTxt(s) {
+    return String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+  }
+
   function localApi(ambId) {
     if (catalogoLocais.length) {
+      // 1) O ambiente já é um código real do catálogo do backend
+      const direto = catalogoLocais.find(l => l.id === ambId);
+      if (direto) return direto.id;
+      // 2) Ambiente legado do protótipo: casa pelo nome exato (ex.: "Sala B-204")
       const p = DB.localPartes(ambId);
+      if (p) {
+        const porNome = catalogoLocais.find(l => normTxt(l.nome) === normTxt(p.ambiente.nome));
+        if (porNome) return porNome.id;
+      }
+      // 3) Último recurso: mesmo tipo de ambiente
       const tipo = p ? (p.ambiente.tipo || '').toLowerCase() : '';
       const alvoTipo = tipo.includes('laborat') ? 'LABORATORIO'
         : tipo.includes('audit') ? 'AUDITORIO'
@@ -61,7 +74,55 @@ BRIDGE_JS = r"""/* Ponte não-invasiva entre window.DB (frontend) e a API FastAP
       const achado = catalogoLocais.find(l => l.tipo === alvoTipo) || catalogoLocais[0];
       return achado.id;
     }
-    return 'BL1-T-S101';
+    return ambId;
+  }
+
+  const TIPO_LOCAL_FRONT = {
+    SALA: 'Sala de aula', LABORATORIO: 'Laboratório', AUDITORIO: 'Auditório', AREA_COMUM: 'Área comum'
+  };
+
+  function slugId(s) { return normTxt(s).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'x'; }
+
+  // Substitui o catálogo fictício do protótipo pelo catálogo real (Supabase/backend),
+  // para que o local escolhido no formulário seja exatamente o local salvo no chamado.
+  function aplicarCatalogoNoFront() {
+    if (!catalogoLocais.length) return false;
+    const campi = [], blocos = [], andares = [], ambientes = [];
+    const vistos = new Set();
+    const ordenados = catalogoLocais.slice().sort((a, b) =>
+      String(a.campus || '').localeCompare(String(b.campus || ''), 'pt-BR')
+      || String(a.bloco).localeCompare(String(b.bloco), 'pt-BR')
+      || (a.andar - b.andar)
+      || String(a.nome).localeCompare(String(b.nome), 'pt-BR', { numeric: true }));
+    for (const l of ordenados) {
+      const campusNome = l.campus || 'Campus principal';
+      const cid = 'c-' + slugId(campusNome);
+      if (!vistos.has(cid)) { vistos.add(cid); campi.push({ id: cid, nome: campusNome, codigo: campusNome.slice(0, 3).toUpperCase(), ativo: true }); }
+      const bid = cid + '--b-' + slugId(l.bloco);
+      if (!vistos.has(bid)) { vistos.add(bid); blocos.push({ id: bid, campus: cid, nome: l.bloco, codigo: l.bloco, ativo: true }); }
+      const aid = bid + '--a-' + l.andar;
+      if (!vistos.has(aid)) { vistos.add(aid); andares.push({ id: aid, bloco: bid, nome: l.andar === 0 ? 'Térreo' : l.andar + 'º andar', ativo: true }); }
+      ambientes.push({ id: l.id, andar: aid, nome: l.nome, codigo: l.id, tipo: TIPO_LOCAL_FRONT[l.tipo] || 'Área comum', ativo: true });
+    }
+    const antes = JSON.stringify(DB.s.ambientes.map(a => a.id));
+    DB.s.campi = campi; DB.s.blocos = blocos; DB.s.andares = andares; DB.s.ambientes = ambientes;
+    return antes !== JSON.stringify(ambientes.map(a => a.id));
+  }
+
+  async function garantirCatalogo(forcar) {
+    let mudouCatalogo = false;
+    if (forcar || !catalogoLocais.length) {
+      const rl = await api('GET', '/catalogo/locais');
+      if (rl.ok && Array.isArray(rl.data) && rl.data.length) {
+        catalogoLocais = rl.data;
+        mudouCatalogo = aplicarCatalogoNoFront();
+      }
+    }
+    if (forcar || !catalogoCategorias.length) {
+      const rc = await api('GET', '/catalogo/categorias');
+      if (rc.ok && Array.isArray(rc.data)) catalogoCategorias = rc.data;
+    }
+    return mudouCatalogo;
   }
 
   function categoriaApi(catId) {
@@ -75,9 +136,11 @@ BRIDGE_JS = r"""/* Ponte não-invasiva entre window.DB (frontend) e a API FastAP
         jardim: 'PREDIAL'
       };
       const pista = pistas[catId] || '';
-      const achada = catalogoCategorias.find(c =>
-        c.id.includes(pista) || (catId === 'refrig' && c.id.includes('CLIMAT')) || (catId === 'ti' && c.id === 'TI')
-      ) || catalogoCategorias[0];
+      const catFront = DB.cat(catId);
+      const achada = (catFront && catalogoCategorias.find(c => normTxt(c.nome) === normTxt(catFront.nome)))
+        || catalogoCategorias.find(c =>
+          (pista && c.id.includes(pista)) || (catId === 'refrig' && c.id.includes('CLIMAT')) || (catId === 'ti' && c.id === 'TI')
+        ) || catalogoCategorias[0];
       return achada.id;
     }
     return 'ELETRICA';
@@ -125,16 +188,42 @@ BRIDGE_JS = r"""/* Ponte não-invasiva entre window.DB (frontend) e a API FastAP
     const headers = { 'Content-Type': 'application/json' };
     const tok = getToken();
     if (tok) headers.Authorization = 'Bearer ' + tok;
-    const res = await fetch('/api/v1' + path, {
-      method,
-      headers,
-      body: body !== undefined ? JSON.stringify(body) : undefined
-    });
+    let res;
+    try {
+      res = await fetch('/api/v1' + path, {
+        method,
+        headers,
+        body: body !== undefined ? JSON.stringify(body) : undefined
+      });
+    } catch (e) {
+      const falha = { ok: false, status: 0, data: { mensagem: 'Sem conexão com o servidor. Verifique sua internet e tente novamente.' } };
+      if (window.UnifapApi) window.UnifapApi.ultimo = { method, path, status: 0, data: falha.data };
+      return falha;
+    }
     const text = await res.text();
     let data = null;
     try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
-    window.UnifapApi.ultimo = { method, path, status: res.status, data };
+    if (window.UnifapApi) window.UnifapApi.ultimo = { method, path, status: res.status, data };
     return { ok: res.ok, status: res.status, data };
+  }
+
+  function mensagemErro(r, padrao) {
+    if (!r) return padrao;
+    if (r.status === 401) return 'Sua sessão expirou. Saia e entre novamente para continuar.';
+    if (r.status === 403) return (r.data && r.data.mensagem) || 'Seu perfil não tem permissão para esta ação.';
+    if (r.status === 429) return 'Muitas tentativas em pouco tempo. Aguarde alguns segundos e tente de novo.';
+    const d = r.data;
+    if (d && typeof d === 'object') {
+      if (d.mensagem) return d.mensagem;
+      if (Array.isArray(d.detalhes) && d.detalhes.length) return d.detalhes.map(x => x.msg || x.mensagem || String(x)).join(' ');
+      if (Array.isArray(d.detail) && d.detail.length) return d.detail.map(x => x.msg || String(x)).join(' ');
+    }
+    return padrao;
+  }
+
+  function avisar(r, padrao) {
+    if (r && !r.ok && window.UI && UI.toast) UI.toast(mensagemErro(r, padrao), 'err');
+    return !!(r && r.ok);
   }
 
   const STATUS_API_PARA_FRONT = {
@@ -165,6 +254,8 @@ BRIDGE_JS = r"""/* Ponte não-invasiva entre window.DB (frontend) e a API FastAP
 
   function ambienteParaFront(localApiId) {
     const s = String(localApiId || '').toUpperCase();
+    if (DB.amb(s)) return s;
+    if (DB.amb(localApiId)) return localApiId;
     if (s.includes('204')) return 'mz-b-2-x1';
     if (s.includes('LAB1')) return 'mz-c-1-x1';
     if (s.includes('LAB2')) return 'mz-c-1-x1';
@@ -192,10 +283,64 @@ BRIDGE_JS = r"""/* Ponte não-invasiva entre window.DB (frontend) e a API FastAP
 
   let sincronizando = false;
   let escritasEmAndamento = 0;
+  let geracaoEscrita = 0;
+  let ressincronizar = false;
+  let renderPendente = false;
+
+  // Verdadeiro quando o usuário está preenchendo algum formulário na tela atual.
+  // Nesses casos a atualização periódica NÃO pode redesenhar a tela (apagaria o que foi digitado).
+  function telaComEdicao() {
+    if (document.querySelector('dialog[open]')) return true;
+    const main = document.getElementById('main');
+    if (!main) return false;
+    if (main.querySelector('[data-submit]:disabled')) return true;
+    const ae = document.activeElement;
+    if (ae && main.contains(ae) && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) && ae.type !== 'file') return true;
+    if (main.querySelector('[data-files] li')) return true;
+    for (const el of main.querySelectorAll('input, textarea, select')) {
+      if (el.disabled || el.type === 'file' || el.type === 'hidden') continue;
+      if (el.tagName === 'SELECT') {
+        const opts = [...el.options];
+        const temPadrao = opts.some(o => o.defaultSelected);
+        if (temPadrao ? opts.some(o => o.selected !== o.defaultSelected) : el.selectedIndex > 0) return true;
+      } else if (el.type === 'checkbox' || el.type === 'radio') {
+        if (el.checked !== el.defaultChecked) return true;
+      } else if (el.value !== el.defaultValue) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function renderSeguro() {
+    if (!(window.App && App.render)) return;
+    if (telaComEdicao()) { renderPendente = true; return; }
+    renderPendente = false;
+    const y = window.scrollY;
+    App.render();
+    window.scrollTo(0, y);
+  }
+
+  // Atualiza os chamados existentes NO MESMO OBJETO (preserva referências usadas pelas telas abertas,
+  // evitando que ações feitas depois de uma sincronização sejam perdidas).
+  function mesclarChamados(reais) {
+    const existentes = new Map(DB.s.chamados.map(c => [c.id, c]));
+    return reais.map(r => {
+      const ex = existentes.get(r.id);
+      if (!ex) return r;
+      for (const k of Object.keys(ex)) if (!(k in r)) delete ex[k];
+      Object.assign(ex, r);
+      return ex;
+    });
+  }
 
   async function carregarChamadosDoBackend() {
-    if (!getToken() || sincronizando || escritasEmAndamento > 0) return;
+    if (!getToken()) return;
+    if (sincronizando || escritasEmAndamento > 0) { ressincronizar = true; return; }
     sincronizando = true;
+    ressincronizar = false;
+    const geracaoInicial = geracaoEscrita;
+    const obsoleto = () => escritasEmAndamento > 0 || geracaoInicial !== geracaoEscrita;
     try {
       // Só consulta /usuarios quando o perfil atual for admin (evita 403 desnecessários)
       if (DB.can('admin')) {
@@ -214,18 +359,18 @@ BRIDGE_JS = r"""/* Ponte não-invasiva entre window.DB (frontend) e a API FastAP
       }
 
       const rl = await api('GET', '/chamados?limite=100');
-      if (!rl.ok || !Array.isArray(rl.data) || escritasEmAndamento > 0) return;
+      if (!rl.ok || !Array.isArray(rl.data) || obsoleto()) return;
 
       const mapa = loadMap();
-      const reais = [];
 
-      for (const resumo of rl.data) {
-        if (escritasEmAndamento > 0) return;
+      async function montarChamado(resumo) {
         const proto = resumo.protocolo;
-        const rd = await api('GET', '/chamados/' + encodeURIComponent(proto));
-        if (!rd.ok || !rd.data) continue;
+        const [rd, rh] = await Promise.all([
+          api('GET', '/chamados/' + encodeURIComponent(proto)),
+          api('GET', '/chamados/' + encodeURIComponent(proto) + '/historico')
+        ]);
+        if (!rd.ok || !rd.data) return null;
         const d = rd.data;
-        const rh = await api('GET', '/chamados/' + encodeURIComponent(proto) + '/historico');
         const histApi = rh.ok && Array.isArray(rh.data) ? rh.data : [];
 
         garantirUsuarioLocal(d.solicitante_id, 'Solicitante');
@@ -251,7 +396,7 @@ BRIDGE_JS = r"""/* Ponte não-invasiva entre window.DB (frontend) e a API FastAP
 
         const catFront = categoriaParaFront(d.categoria_id);
         const catObj = DB.cat(catFront);
-        reais.push({
+        return {
           id: proto,
           categoria: catFront,
           ambiente: ambienteParaFront(d.local_id),
@@ -271,88 +416,152 @@ BRIDGE_JS = r"""/* Ponte não-invasiva entre window.DB (frontend) e a API FastAP
           })),
           avaliacao: d.avaliacao ? { nota: d.avaliacao.nota, comentario: d.avaliacao.comentario || '' } : undefined,
           historico: historicoFront
-        });
-        mapa[proto] = proto;
+        };
       }
 
-      if (escritasEmAndamento > 0) return;
+      // Busca os detalhes em lotes paralelos (evita dezenas de requisições em série)
+      const reais = [];
+      const LOTE = 6;
+      for (let i = 0; i < rl.data.length; i += LOTE) {
+        if (obsoleto()) return;
+        const parte = await Promise.all(rl.data.slice(i, i + LOTE).map(montarChamado));
+        for (const c of parte) {
+          if (!c) continue;
+          reais.push(c);
+          mapa[c.id] = c.id;
+        }
+      }
+
+      if (obsoleto()) return;
       saveMap(mapa);
       const mudou = JSON.stringify(DB.s.chamados) !== JSON.stringify(reais);
       if (mudou) {
-        DB.s.chamados = reais;
+        DB.s.chamados = mesclarChamados(reais);
         originalSave();
         anterior = snapshot();
-        if (window.App && App.render) App.render();
+        renderSeguro();
       }
     } catch (err) {
       console.warn('[UNIFAP Bridge sync]', err);
     } finally {
       sincronizando = false;
+      if (ressincronizar) {
+        ressincronizar = false;
+        setTimeout(() => { carregarChamadosDoBackend().catch(() => {}); }, 400);
+      }
     }
   }
 
   async function autenticarSessao(userId) {
     if (!userId || !getToken()) return;
     await detectarModo();
-    const rl = await api('GET', '/catalogo/locais');
-    if (rl.ok && Array.isArray(rl.data)) catalogoLocais = rl.data;
-    const rc = await api('GET', '/catalogo/categorias');
-    if (rc.ok && Array.isArray(rc.data)) catalogoCategorias = rc.data;
+    const mudouCatalogo = await garantirCatalogo(true);
+    if (mudouCatalogo) { originalSave(); renderSeguro(); }
     await carregarChamadosDoBackend();
   }
 
-  async function sincronizarNovoChamado(c) {
-    const mapa = loadMap();
-    if (mapa[c.id]) return;
+  function payloadChamado(c) {
     const cat = DB.cat(c.categoria);
     const titulo = ((cat ? cat.nome : 'Chamado') + ' - ' + DB.localCurto(c.ambiente)).slice(0, 120);
     const desc = c.descricao && c.descricao.length >= 10
       ? c.descricao
       : (c.descricao || '') + ' (detalhamento adicional registrado)';
-    const r = await api('POST', '/chamados', {
+    return {
       titulo: titulo.length >= 5 ? titulo : 'Chamado UNIFAP',
-      descricao: desc === titulo ? desc + '.' : desc,
+      descricao: (desc === titulo ? desc + '.' : desc).slice(0, 2000),
       local_id: localApi(c.ambiente),
       categoria_id: categoriaApi(c.categoria),
       equipamento: null,
       impacta_aulas: !!c.impedeAula,
       pessoas_afetadas: c.impedeAula ? 30 : 5
-    });
-    if (r.ok && r.data && r.data.protocolo) {
-      const protocolo = r.data.protocolo;
-      mapa[c.id] = protocolo;
-      saveMap(mapa);
-      const pendentes = (window.UnifapPendingUploads && window.UnifapPendingUploads[c.id]) || [];
-      if (pendentes.length) {
-        delete window.UnifapPendingUploads[c.id];
-        const tok = getToken();
-        let falhasUpload = 0;
-        for (const item of pendentes) {
-          if (item.raw && tok) {
-            try {
-              const fd = new FormData();
-              fd.append('arquivo', item.raw, item.name);
-              const rUp = await fetch('/api/v1/chamados/' + encodeURIComponent(protocolo) + '/evidencias', {
-                method: 'POST', headers: { Authorization: 'Bearer ' + tok }, body: fd
-              });
-              if (!rUp.ok) falhasUpload += 1;
-            } catch (e) { falhasUpload += 1; }
-          } else if (item.driveUrl) {
-            const rGd = await api('POST', '/chamados/' + encodeURIComponent(protocolo) + '/evidencias/google-drive', {
-              url: item.driveUrl,
-              nome_arquivo: item.name
-            });
-            if (!rGd.ok) falhasUpload += 1;
+    };
+  }
+
+  async function enviarEvidencias(protocolo, itens) {
+    const tok = getToken();
+    const anexos = [];
+    let falhas = 0;
+    for (const item of itens || []) {
+      if (item.raw && tok) {
+        try {
+          const fd = new FormData();
+          fd.append('arquivo', item.raw, item.name);
+          const rUp = await fetch('/api/v1/chamados/' + encodeURIComponent(protocolo) + '/evidencias', {
+            method: 'POST', headers: { Authorization: 'Bearer ' + tok }, body: fd
+          });
+          if (!rUp.ok) { falhas += 1; continue; }
+          const d = await rUp.json().catch(() => ({}));
+          if (d && d.id) {
+            window.UnifapMediaCache = window.UnifapMediaCache || {};
+            try { window.UnifapMediaCache[protocolo + ':' + d.id] = URL.createObjectURL(item.raw); } catch (e) { /* ok */ }
           }
-        }
-        if (falhasUpload && window.UI && UI.toast) {
-          UI.toast(falhasUpload + ' evidência(s) não puderam ser salvas no servidor. Tente anexar novamente nos detalhes do chamado.', 'err');
-        }
+          anexos.push({ apiId: d.id || null, nome: item.name, tipo: item.video ? 'video' : 'image', tamanho: +(item.size / 1048576).toFixed(1) || 0.1 });
+        } catch (e) { falhas += 1; }
+      } else if (item.driveUrl) {
+        const rGd = await api('POST', '/chamados/' + encodeURIComponent(protocolo) + '/evidencias/google-drive', {
+          url: item.driveUrl,
+          nome_arquivo: item.name
+        });
+        if (!rGd.ok) { falhas += 1; continue; }
+        const d = rGd.data || {};
+        anexos.push({ apiId: d.id || null, nome: d.nome_arquivo || item.name, tipo: String(d.content_type || '').startsWith('video') ? 'video' : 'image', tamanho: +((d.tamanho_bytes || 0) / 1048576).toFixed(1) || 0.1 });
       }
-      if (window.UI && UI.toast) {
-        UI.toast('Sincronizado com o backend: ' + protocolo);
+    }
+    return { anexos, falhas };
+  }
+
+  // Criação síncrona usada pela tela "Abrir chamado": só confirma ao usuário depois que o
+  // backend salvou de fato. Em caso de erro, o formulário permanece preenchido.
+  async function criarChamadoApi(dados) {
+    if (!getToken()) {
+      return { ok: false, mensagem: 'Sua sessão expirou. Saia e entre novamente para enviar o chamado.' };
+    }
+    escritasEmAndamento += 1;
+    geracaoEscrita += 1;
+    try {
+      await garantirCatalogo(false);
+      const r = await api('POST', '/chamados', payloadChamado(dados));
+      if (!r.ok || !r.data || !r.data.protocolo) {
+        return { ok: false, mensagem: mensagemErro(r, 'Não foi possível registrar o chamado no servidor. Seus dados foram mantidos; tente novamente.') };
       }
-      await carregarChamadosDoBackend();
+      const protocolo = r.data.protocolo;
+      const mapa = loadMap();
+      mapa[protocolo] = protocolo;
+      saveMap(mapa);
+      const up = await enviarEvidencias(protocolo, dados.arquivos);
+      return {
+        ok: true,
+        protocolo,
+        prioridade: PRIO_API_PARA_FRONT[r.data.prioridade] || null,
+        criadoEm: r.data.criado_em || null,
+        anexos: up.anexos,
+        falhas: up.falhas
+      };
+    } finally {
+      escritasEmAndamento = Math.max(0, escritasEmAndamento - 1);
+    }
+  }
+
+  async function sincronizarNovoChamado(c) {
+    const mapa = loadMap();
+    if (mapa[c.id]) return;
+    await garantirCatalogo(false);
+    const r = await api('POST', '/chamados', payloadChamado(c));
+    if (!r.ok || !r.data || !r.data.protocolo) {
+      avisar(r, 'Não foi possível salvar o chamado no servidor.');
+      return;
+    }
+    const protocolo = r.data.protocolo;
+    mapa[c.id] = protocolo;
+    mapa[protocolo] = protocolo;
+    saveMap(mapa);
+    const pendentes = (window.UnifapPendingUploads && window.UnifapPendingUploads[c.id]) || [];
+    if (pendentes.length) {
+      delete window.UnifapPendingUploads[c.id];
+      const up = await enviarEvidencias(protocolo, pendentes);
+      if (up.falhas && window.UI && UI.toast) {
+        UI.toast(up.falhas + ' evidência(s) não puderam ser salvas no servidor. Tente anexar novamente nos detalhes do chamado.', 'err');
+      }
     }
   }
 
@@ -368,17 +577,15 @@ BRIDGE_JS = r"""/* Ponte não-invasiva entre window.DB (frontend) e a API FastAP
           executor_id: executorIdApi(depois.executor),
           observacao: obsEv ? obsEv.texto : null
         });
-        if (!rAt.ok && window.UI && UI.toast) {
-          UI.toast((rAt.data && rAt.data.mensagem) || 'Falha ao salvar atribuição no servidor.', 'err');
-        } else {
-          await carregarChamadosDoBackend();
-        }
+        avisar(rAt, 'Falha ao salvar atribuição no servidor.');
       } else if (depois.estado === 'atendimento') {
-        await api('POST', '/chamados/' + protocolo + '/iniciar');
+        const rIn = await api('POST', '/chamados/' + protocolo + '/iniciar');
+        avisar(rIn, 'Falha ao iniciar atendimento no servidor.');
       } else if (depois.estado === 'resolvido') {
         const sol = depois.historico.slice(antes.historico.length).find(h => h.tipo === 'comentario');
         const texto = sol && sol.texto.length >= 10 ? sol.texto : 'Atendimento concluído pela equipe técnica.';
-        await api('POST', '/chamados/' + protocolo + '/resolver', { solucao: texto });
+        const rRes = await api('POST', '/chamados/' + protocolo + '/resolver', { solucao: texto });
+        avisar(rRes, 'Falha ao registrar resolução no servidor.');
       } else if (depois.estado === 'concluido') {
         const nota = depois.avaliacao && depois.avaliacao.nota ? depois.avaliacao.nota : 5;
         const com = depois.avaliacao && depois.avaliacao.comentario
@@ -388,17 +595,17 @@ BRIDGE_JS = r"""/* Ponte não-invasiva entre window.DB (frontend) e a API FastAP
           nota,
           comentario: com
         });
-        if (!rAv.ok && window.UI && UI.toast) {
-          UI.toast((rAv.data && rAv.data.mensagem) || 'Não foi possível registrar a avaliação no servidor.', 'err');
-        }
+        avisar(rAv, 'Não foi possível registrar a avaliação no servidor.');
       } else if (depois.estado === 'reencaminhado') {
-        await api('POST', '/triagem/' + protocolo + '/reencaminhar', {
+        const rRe = await api('POST', '/triagem/' + protocolo + '/reencaminhar', {
           motivo: 'Reencaminhado pela equipe técnica para nova triagem.'
         });
+        avisar(rRe, 'Falha ao reencaminhar chamado no servidor.');
       } else if (depois.estado === 'cancelado') {
-        await api('POST', '/chamados/' + protocolo + '/cancelar', {
+        const rCa = await api('POST', '/chamados/' + protocolo + '/cancelar', {
           motivo: 'Cancelado pelo usuário na interface.'
         });
+        avisar(rCa, 'Falha ao cancelar chamado no servidor.');
       }
       return;
     }
@@ -408,10 +615,11 @@ BRIDGE_JS = r"""/* Ponte não-invasiva entre window.DB (frontend) e a API FastAP
       const novos = depois.historico.slice(antes.historico.length);
       for (const h of novos) {
         if (h.tipo === 'comentario' && h.texto) {
-          await api('POST', '/chamados/' + protocolo + '/comentarios', {
+          const rCm = await api('POST', '/chamados/' + protocolo + '/comentarios', {
             texto: h.texto,
             interno: h.publico === false
           });
+          avisar(rCm, 'Falha ao registrar comentário no servidor.');
         }
       }
     }
@@ -441,31 +649,42 @@ BRIDGE_JS = r"""/* Ponte não-invasiva entre window.DB (frontend) e a API FastAP
     anterior = atual;
 
     (async () => {
-      escritasEmAndamento += 1;
+      const mudouSessao = prev.sessao !== atual.sessao;
+      const prevById = new Map(prev.chamados.map(c => [c.id, c]));
+      const pendentesNovos = [];
+      const pendentesAlt = [];
+      const mapaAtual = loadMap();
+      for (const c of DB.s.chamados) {
+        const antes = prevById.get(c.id);
+        if (!antes) {
+          if (!mapaAtual[c.id]) pendentesNovos.push(c);
+        } else if (antes.estado !== c.estado || antes.historicoLen !== c.historico.length) {
+          pendentesAlt.push([antes, c]);
+        }
+      }
+
+      const temEscrita = pendentesNovos.length > 0 || pendentesAlt.length > 0;
+      if (temEscrita) {
+        escritasEmAndamento += 1;
+        geracaoEscrita += 1;
+      }
       try {
-        if (prev.sessao !== atual.sessao) {
+        if (mudouSessao) {
           await autenticarSessao(atual.sessao);
         }
-        const prevById = new Map(prev.chamados.map(c => [c.id, c]));
-        let houveMutacao = false;
-        for (const c of DB.s.chamados) {
-          const antes = prevById.get(c.id);
-          if (!antes) {
-            await sincronizarNovoChamado(c);
-            houveMutacao = true;
-          } else if (antes.estado !== c.estado || antes.historicoLen !== c.historico.length) {
-            await sincronizarAlteracao(antes, c);
-            houveMutacao = true;
-          }
+        for (const c of pendentesNovos) {
+          await sincronizarNovoChamado(c);
         }
-        if (houveMutacao) {
-          escritasEmAndamento -= 1;
-          try { await carregarChamadosDoBackend(); } finally { escritasEmAndamento += 1; }
+        for (const [antes, c] of pendentesAlt) {
+          await sincronizarAlteracao(antes, c);
         }
       } catch (err) {
         console.warn('[UNIFAP Bridge]', err);
       } finally {
-        escritasEmAndamento = Math.max(0, escritasEmAndamento - 1);
+        if (temEscrita) {
+          escritasEmAndamento = Math.max(0, escritasEmAndamento - 1);
+          carregarChamadosDoBackend().catch(() => {});
+        }
       }
     })();
   };
@@ -474,6 +693,7 @@ BRIDGE_JS = r"""/* Ponte não-invasiva entre window.DB (frontend) e a API FastAP
     autenticarSessao(DB.s.sessao).catch(() => {});
   }
   window.addEventListener('hashchange', () => {
+    renderPendente = false;
     if (DB.s.sessao && getToken()) carregarChamadosDoBackend().catch(() => {});
   });
   setInterval(() => {
@@ -486,6 +706,8 @@ BRIDGE_JS = r"""/* Ponte não-invasiva entre window.DB (frontend) e a API FastAP
     get token() { return getToken(); },
     get protocolos() { return loadMap(); },
     sincronizar: carregarChamadosDoBackend,
+    criarChamado: criarChamadoApi,
+    garantirCatalogo,
     ultimo: null,
     api
   };
