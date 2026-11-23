@@ -155,6 +155,62 @@ class SupabaseClient:
         except httpx.HTTPError as exc:
             log_app.error("Falha ao solicitar recuperação no Supabase Auth: %s", exc)
 
+    # ------------------------------------------------------------------ Supabase Storage
+    def upload_storage(self, bucket: str, caminho: str, dados: bytes, content_type: str) -> None:
+        """Grava objeto binário em bucket privado do Supabase Storage."""
+        try:
+            r = httpx.post(
+                f"{self._root_url}/storage/v1/object/{bucket}/{caminho}",
+                headers={
+                    "apikey": self._secret_key,
+                    "Authorization": f"Bearer {self._secret_key}",
+                    "Content-Type": content_type,
+                    "x-upsert": "true",
+                },
+                content=dados,
+                timeout=30.0,
+            )
+        except httpx.HTTPError as exc:
+            log_app.error("Falha de rede no upload Supabase Storage: %s", exc)
+            raise ErroPersistenciaSupabase("Falha ao enviar arquivo para o armazenamento.") from exc
+        if r.status_code >= 400:
+            log_app.error("Erro Supabase Storage upload (%s): %s", r.status_code, r.text[:300])
+            raise ErroPersistenciaSupabase("Não foi possível salvar o arquivo no armazenamento.")
+
+    def download_storage(self, bucket: str, caminho: str) -> bytes | None:
+        """Baixa objeto binário de bucket privado do Supabase Storage (ou None se 404)."""
+        try:
+            r = httpx.get(
+                f"{self._root_url}/storage/v1/object/{bucket}/{caminho}",
+                headers={
+                    "apikey": self._secret_key,
+                    "Authorization": f"Bearer {self._secret_key}",
+                },
+                timeout=30.0,
+            )
+        except httpx.HTTPError as exc:
+            log_app.error("Falha de rede no download Supabase Storage: %s", exc)
+            raise ErroPersistenciaSupabase("Falha ao baixar arquivo do armazenamento.") from exc
+        if r.status_code in (400, 404):
+            return None
+        if r.status_code >= 400:
+            log_app.error("Erro Supabase Storage download (%s): %s", r.status_code, r.text[:300])
+            raise ErroPersistenciaSupabase("Não foi possível carregar o arquivo do armazenamento.")
+        return r.content
+
+    def remover_storage(self, bucket: str, caminho: str) -> None:
+        try:
+            httpx.delete(
+                f"{self._root_url}/storage/v1/object/{bucket}/{caminho}",
+                headers={
+                    "apikey": self._secret_key,
+                    "Authorization": f"Bearer {self._secret_key}",
+                },
+                timeout=15.0,
+            )
+        except httpx.HTTPError as exc:
+            log_app.error("Falha ao remover objeto no Supabase Storage: %s", exc)
+
     def select(self, tabela: str, params: dict[str, str] | None = None) -> list[dict[str, Any]]:
         r = self._request("GET", f"/{tabela}", params=params)
         dados = r.json()

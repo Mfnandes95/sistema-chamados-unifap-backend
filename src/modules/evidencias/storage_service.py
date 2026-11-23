@@ -22,6 +22,7 @@ from src.core.exceptions import (
     RecursoNaoEncontrado,
     ValidacaoDominio,
 )
+from src.core.supabase_client import SupabaseClient
 from src.modules.autenticacao.schemas import UsuarioAutenticado
 from src.modules.chamados.domain.entities import Evidencia
 from src.modules.chamados.domain.value_objects import agora_utc
@@ -111,12 +112,21 @@ def validar_metadados(nome_arquivo: str, content_type: str) -> str:
 
 
 class ServicoArmazenamentoEvidencias:
-    def __init__(self, registro: IRegistroEvidencias, diretorio: Path, limite_bytes: int,
-                 relogio: Callable[[], datetime] = agora_utc) -> None:
+    def __init__(
+        self,
+        registro: IRegistroEvidencias,
+        diretorio: Path,
+        limite_bytes: int,
+        relogio: Callable[[], datetime] = agora_utc,
+        supabase_client: SupabaseClient | None = None,
+        bucket_storage: str = "evidencias",
+    ) -> None:
         self._registro = registro
         self._diretorio = diretorio
         self._limite = limite_bytes
         self._relogio = relogio
+        self._supabase = supabase_client
+        self._bucket = bucket_storage
 
     async def anexar(self, protocolo: str, nome_arquivo: str, content_type: str,
                      leitor: LeitorBytes, ator: UsuarioAutenticado) -> EvidenciaDTO:
@@ -125,12 +135,38 @@ class ServicoArmazenamentoEvidencias:
         self._registro.verificar_pode_anexar(protocolo, ator)
 
         evidencia_id = str(uuid.uuid4())
+        agora = self._relogio()
+        nome_seguro = sanitizar_nome_arquivo(nome_arquivo) or f"{evidencia_id}{extensao}"
+
+        if self._supabase is not None:
+            buf = bytearray()
+            primeiro = True
+            while bloco := await leitor(TAMANHO_BLOCO):
+                if primeiro and not assinatura_confere(mime_canonico, bloco[:16]):
+                    raise ArquivoInvalido("Conteúdo não corresponde ao tipo declarado.")
+                primeiro = False
+                if len(buf) + len(bloco) > self._limite:
+                    raise ArquivoMuitoGrande(f"Arquivo excede {self._limite} bytes.")
+                buf.extend(bloco)
+            if not buf:
+                raise ArquivoInvalido("Arquivo vazio.")
+            objeto_path = f"{protocolo}/{evidencia_id}{extensao}"
+            self._supabase.upload_storage(self._bucket, objeto_path, bytes(buf), mime_canonico)
+            try:
+                self._registro.registrar_evidencia(protocolo, Evidencia(
+                    evidencia_id, nome_seguro, mime_canonico, len(buf), objeto_path,
+                    ator.id, agora), ator)
+            except BaseException:
+                self._supabase.remover_storage(self._bucket, objeto_path)
+                raise
+            return EvidenciaDTO(id=evidencia_id, protocolo=protocolo, nome_arquivo=nome_seguro,
+                                content_type=mime_canonico, tamanho_bytes=len(buf),
+                                enviado_em=agora)
+
         pasta = self._diretorio / protocolo
         await aiofiles.os.makedirs(pasta, exist_ok=True)
         destino = pasta / f"{evidencia_id}{extensao}"
         total = 0
-        agora = self._relogio()
-        nome_seguro = sanitizar_nome_arquivo(nome_arquivo) or f"{evidencia_id}{extensao}"
         try:
             async with aiofiles.open(destino, "wb") as arquivo:
                 primeiro = True
@@ -214,9 +250,23 @@ class ServicoArmazenamentoEvidencias:
                 base_nome = f"{PurePath(base_nome).stem}{extensao}"
 
             agora = self._relogio()
-            self._registro.registrar_evidencia(protocolo, Evidencia(
-                evidencia_id, base_nome, mime_detectado, total, str(destino), ator.id, agora
-            ), ator)
+            if self._supabase is not None:
+                objeto_path = f"{protocolo}/{evidencia_id}{extensao}"
+                dados_arq = destino.read_bytes()
+                await aiofiles.os.remove(destino)
+                destino = None
+                self._supabase.upload_storage(self._bucket, objeto_path, dados_arq, mime_detectado)
+                try:
+                    self._registro.registrar_evidencia(protocolo, Evidencia(
+                        evidencia_id, base_nome, mime_detectado, total, objeto_path, ator.id, agora
+                    ), ator)
+                except BaseException:
+                    self._supabase.remover_storage(self._bucket, objeto_path)
+                    raise
+            else:
+                self._registro.registrar_evidencia(protocolo, Evidencia(
+                    evidencia_id, base_nome, mime_detectado, total, str(destino), ator.id, agora
+                ), ator)
             return EvidenciaDTO(
                 id=evidencia_id, protocolo=protocolo, nome_arquivo=base_nome,
                 content_type=mime_detectado, tamanho_bytes=total, enviado_em=agora
@@ -238,6 +288,12 @@ class ServicoArmazenamentoEvidencias:
         self, protocolo: str, evidencia_id: str, ator: UsuarioAutenticado
     ) -> ArquivoEvidencia:
         ev = self._registro.obter_evidencia(protocolo, evidencia_id, ator)
+        if self._supabase is not None and not ev.caminho.startswith("/"):
+            dados = self._supabase.download_storage(self._bucket, ev.caminho)
+            if dados is not None:
+                return ArquivoEvidencia(
+                    conteudo=dados, nome_arquivo=ev.nome_arquivo, content_type=ev.content_type
+                )
         caminho = Path(ev.caminho).resolve()
         raiz = self._diretorio.resolve()
         # Defesa contra path traversal: garante que o arquivo está dentro do diretório de uploads.

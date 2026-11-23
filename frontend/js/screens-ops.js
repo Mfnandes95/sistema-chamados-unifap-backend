@@ -164,7 +164,7 @@
           <dt>Aberto em</dt><dd>${fmt.dataHora(c.criadoEm)}</dd>
         </dl>
         <div><p class="label" style="margin-bottom:6px">Descrição</p><p class="desc">${esc(c.descricao)}</p></div>
-        ${c.anexos.length ? `<div><p class="label" style="margin-bottom:10px">Evidências</p><div class="attach">${c.anexos.map((a, i) => `<button class="thumb" type="button" data-preview="${i}"><span class="pv">${ic(a.tipo === 'video' ? 'movie' : 'image')}</span><b>${esc(a.nome)}</b><small>${fmt.dec(a.tamanho)} MB</small></button>`).join('')}</div></div>` : ''}
+        ${c.anexos.length ? `<div><p class="label" style="margin-bottom:10px">Evidências</p><div class="attach">${c.anexos.map((a, i) => `<button class="thumb" type="button" data-preview="${i}"><span class="pv" data-pv="${i}">${ic(a.tipo === 'video' ? 'movie' : 'image')}</span><b>${esc(a.nome)}</b><small>${fmt.dec(a.tamanho)} MB</small></button>`).join('')}</div></div>` : ''}
       </div>
     </section>`;
   }

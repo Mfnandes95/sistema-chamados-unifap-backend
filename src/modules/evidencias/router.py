@@ -1,7 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, File, Path, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
 from src.core.container import ContainerDep
 from src.modules.autenticacao.dependencies import UsuarioAtivo, UsuarioAtual
@@ -38,14 +38,21 @@ async def importar_google_drive(
     )
 
 
-@router.get("/{protocolo}/evidencias/{evidencia_id}")
+@router.get("/{protocolo}/evidencias/{evidencia_id}", response_model=None)
 def baixar_evidencia(
     protocolo: ProtocoloPath,
     evidencia_id: str,
     ator: UsuarioAtual,
     c: ContainerDep,
-) -> FileResponse:
+) -> Response:
     arq = c.evidencias.obter_arquivo(protocolo, evidencia_id, ator)
+    if arq.conteudo is not None:
+        return Response(
+            content=arq.conteudo,
+            media_type=arq.content_type,
+            headers={"Content-Disposition": f'inline; filename="{arq.nome_arquivo}"'},
+        )
+    assert arq.caminho is not None
     return FileResponse(
         path=arq.caminho,
         media_type=arq.content_type,

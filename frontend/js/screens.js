@@ -36,7 +36,7 @@
     },
     evidPanel(c, { canAdd = false } = {}) {
       const items = c.anexos.map((a, i) => `<button class="thumb" type="button" data-preview="${i}">
-          <span class="pv">${ic(a.tipo === 'video' ? 'movie' : 'image')}</span>
+          <span class="pv" data-pv="${i}">${ic(a.tipo === 'video' ? 'movie' : 'image')}</span>
           <b>${esc(a.nome)}</b><small>${a.tipo === 'video' ? 'Vídeo' : 'Imagem'}, ${fmt.dec(a.tamanho)} MB</small>
         </button>`).join('');
       return `<section class="panel">
@@ -70,6 +70,41 @@
       </section>`;
     },
     bindCommon(root, c, rerender) {
+      window.UnifapMediaCache = window.UnifapMediaCache || {};
+      window.UnifapMediaInflight = window.UnifapMediaInflight || {};
+      const carregarMidia = async (protoApi, a) => {
+        if (!a || !a.apiId) return null;
+        const key = `${protoApi}:${a.apiId}`;
+        if (window.UnifapMediaCache[key]) return window.UnifapMediaCache[key];
+        if (window.UnifapMediaInflight[key]) return window.UnifapMediaInflight[key];
+        const tok = (() => { try { return sessionStorage.getItem('unifap-api-jwt') || ''; } catch (err) { return ''; } })();
+        if (!tok) return null;
+        const p = fetch(`/api/v1/chamados/${encodeURIComponent(protoApi)}/evidencias/${encodeURIComponent(a.apiId)}`, {
+          headers: { Authorization: 'Bearer ' + tok }
+        }).then(async r => {
+          if (!r.ok) return null;
+          const url = URL.createObjectURL(await r.blob());
+          window.UnifapMediaCache[key] = url;
+          return url;
+        }).catch(() => null).finally(() => {
+          delete window.UnifapMediaInflight[key];
+        });
+        window.UnifapMediaInflight[key] = p;
+        return p;
+      };
+      if (c && c.anexos && c.anexos.length) {
+        const protoApi = (window.UnifapApi && UnifapApi.protocolos && UnifapApi.protocolos[c.id]) || c.id;
+        c.anexos.forEach((a, i) => {
+          if (a.tipo === 'video' || !a.apiId) return;
+          const slot = root.querySelector(`[data-pv="${i}"]`);
+          if (!slot) return;
+          carregarMidia(protoApi, a).then(url => {
+            if (!url || !slot.isConnected) return;
+            slot.style.overflow = 'hidden';
+            slot.innerHTML = `<img src="${url}" alt="${esc(a.nome)}" style="width:100%;height:100%;object-fit:cover;border-radius:6px;display:block">`;
+          }).catch(() => {});
+        });
+      }
       root.addEventListener('click', async e => {
         const go = e.target.closest('[data-scrollto]');
         if (go) {
@@ -86,29 +121,21 @@
         const pv = e.target.closest('[data-preview]');
         if (pv && c) {
           const a = c.anexos[+pv.dataset.preview];
-          let mediaHtml = `<div class="dlg-preview">${ic(a.tipo === 'video' ? 'movie' : 'image')}</div>`;
-          let objUrl = null;
           const protoApi = (window.UnifapApi && UnifapApi.protocolos && UnifapApi.protocolos[c.id]) || c.id;
-          const tok = (() => { try { return sessionStorage.getItem('unifap-api-jwt') || ''; } catch (err) { return ''; } })();
-          if (a.apiId && tok) {
-            try {
-              const r = await fetch(`/api/v1/chamados/${encodeURIComponent(protoApi)}/evidencias/${encodeURIComponent(a.apiId)}`, {
-                headers: { Authorization: 'Bearer ' + tok }
-              });
-              if (r.ok) {
-                objUrl = URL.createObjectURL(await r.blob());
-                mediaHtml = a.tipo === 'video'
-                  ? `<video controls style="width:100%;max-height:360px;border-radius:8px;background:#000" src="${objUrl}"></video>`
-                  : `<img src="${objUrl}" alt="${esc(a.nome)}" style="width:100%;max-height:360px;object-fit:contain;border-radius:8px;background:var(--surface-2)">`;
-              }
-            } catch (err) { /* fallback ao ícone */ }
+          const url = await carregarMidia(protoApi, a);
+          let mediaHtml;
+          if (url) {
+            mediaHtml = a.tipo === 'video'
+              ? `<video controls style="width:100%;max-height:420px;border-radius:8px;background:#000" src="${url}"></video>`
+              : `<img src="${url}" alt="${esc(a.nome)}" style="width:100%;max-height:420px;object-fit:contain;border-radius:8px;background:var(--surface-2)">`;
+          } else {
+            mediaHtml = `<div class="dlg-preview" style="flex-direction:column;gap:8px;padding:24px;text-align:center">${ic(a.tipo === 'video' ? 'movie' : 'broken_image')}<span class="muted small">Arquivo indisponível no servidor. Anexe novamente se necessário.</span></div>`;
           }
           await dialog({
             title: esc(a.nome),
             body: `${mediaHtml}<p class="small" style="margin-top:10px">${a.tipo === 'video' ? 'Vídeo' : 'Imagem'}, ${fmt.dec(a.tamanho)} MB.</p>`,
             confirm: '', cancel: 'Fechar'
           });
-          if (objUrl) URL.revokeObjectURL(objUrl);
         }
       });
       const cf = $(root, '[data-comment]');
@@ -137,7 +164,11 @@
               const r = await fetch(`/api/v1/chamados/${encodeURIComponent(protoApi)}/evidencias`, {
                 method: 'POST', headers: { Authorization: 'Bearer ' + tok }, body: fd
               });
-              if (r.ok) { const d = await r.json(); apiId = d.id; }
+              if (r.ok) {
+                const d = await r.json();
+                apiId = d.id;
+                if (apiId) window.UnifapMediaCache[`${protoApi}:${apiId}`] = URL.createObjectURL(f);
+              }
               else { const d = await r.json().catch(() => ({})); toast(d.mensagem || `Falha ao enviar ${f.name}.`, 'err'); continue; }
             } catch (err) { toast(`Erro de conexão ao enviar ${f.name}.`, 'err'); continue; }
           }

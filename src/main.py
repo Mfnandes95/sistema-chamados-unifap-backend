@@ -96,8 +96,12 @@ def montar_container(
         catalogo=catalogo,
         gestor_chamados=gestor,
         triagem=ServicoTriagem(gestor, autenticador),
-        evidencias=ServicoArmazenamentoEvidencias(gestor, settings.upload_dir,
-                                                  settings.max_upload_bytes),
+        evidencias=ServicoArmazenamentoEvidencias(
+            gestor,
+            settings.upload_dir,
+            settings.max_upload_bytes,
+            supabase_client=supabase_client,
+        ),
         notificacoes=notificacoes,
         relatorios=ServicoRelatorios(gestor),
     )

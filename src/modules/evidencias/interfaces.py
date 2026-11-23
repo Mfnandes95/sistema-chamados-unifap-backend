@@ -31,7 +31,8 @@ class ImportarDriveRequest(BaseModel):
 class ArquivoEvidencia(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    caminho: Path
+    caminho: Path | None = None
+    conteudo: bytes | None = None
     nome_arquivo: str
     content_type: str
 

@@ -326,19 +326,27 @@ BRIDGE_JS = r"""/* Ponte não-invasiva entre window.DB (frontend) e a API FastAP
       if (pendentes.length) {
         delete window.UnifapPendingUploads[c.id];
         const tok = getToken();
+        let falhasUpload = 0;
         for (const item of pendentes) {
           if (item.raw && tok) {
-            const fd = new FormData();
-            fd.append('arquivo', item.raw, item.name);
-            await fetch('/api/v1/chamados/' + encodeURIComponent(protocolo) + '/evidencias', {
-              method: 'POST', headers: { Authorization: 'Bearer ' + tok }, body: fd
-            });
+            try {
+              const fd = new FormData();
+              fd.append('arquivo', item.raw, item.name);
+              const rUp = await fetch('/api/v1/chamados/' + encodeURIComponent(protocolo) + '/evidencias', {
+                method: 'POST', headers: { Authorization: 'Bearer ' + tok }, body: fd
+              });
+              if (!rUp.ok) falhasUpload += 1;
+            } catch (e) { falhasUpload += 1; }
           } else if (item.driveUrl) {
-            await api('POST', '/chamados/' + encodeURIComponent(protocolo) + '/evidencias/google-drive', {
+            const rGd = await api('POST', '/chamados/' + encodeURIComponent(protocolo) + '/evidencias/google-drive', {
               url: item.driveUrl,
               nome_arquivo: item.name
             });
+            if (!rGd.ok) falhasUpload += 1;
           }
+        }
+        if (falhasUpload && window.UI && UI.toast) {
+          UI.toast(falhasUpload + ' evidência(s) não puderam ser salvas no servidor. Tente anexar novamente nos detalhes do chamado.', 'err');
         }
       }
       if (window.UI && UI.toast) {
