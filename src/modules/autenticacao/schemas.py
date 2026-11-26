@@ -40,6 +40,7 @@ class UsuarioAutenticado(BaseModel):
     vinculo_ativo: bool
     setor: str | None = None
     deve_redefinir_senha: bool = False
+    sessao_versao: int = Field(default=1, exclude=True)
 
 
 class CriarUsuarioRequest(_Entrada):

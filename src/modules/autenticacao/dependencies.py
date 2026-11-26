@@ -36,6 +36,8 @@ def obter_sessao(
     usuario = container.autenticador.obter_por_id(claims.sub)
     if usuario is None:
         raise NaoAutenticado("Usuário não encontrado.")
+    if claims.sessao_versao != usuario.sessao_versao:
+        raise NaoAutenticado("Sessão encerrada.")
     return Sessao(usuario, claims.jti, claims.expira_em)
 
 

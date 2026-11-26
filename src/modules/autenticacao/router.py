@@ -51,7 +51,9 @@ def login(dados: LoginRequest, request: Request, container: ContainerDep) -> Tok
         raise
     limitador.limpar(chave_conta)
     return TokenResponse(
-        access_token=criar_token(usuario.id, usuario.perfil.value, s),
+        access_token=criar_token(
+            usuario.id, usuario.perfil.value, s, sessao_versao=usuario.sessao_versao
+        ),
         expira_em_segundos=s.jwt_expire_minutes * 60,
         perfil=usuario.perfil,
         deve_redefinir_senha=usuario.deve_redefinir_senha,
@@ -62,6 +64,7 @@ def login(dados: LoginRequest, request: Request, container: ContainerDep) -> Tok
 @router.post("/api/v1/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
 def logout(sessao: SessaoAtual, container: ContainerDep) -> Response:
     container.revogacao.revogar(sessao.jti, sessao.expira_em)
+    container.autenticador.invalidar_sessoes(sessao.usuario.id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -74,10 +77,18 @@ def me(usuario: UsuarioParaTroca) -> UsuarioAutenticado:
 def alterar_propria_senha(
     dados: AlterarPropriaSenhaRequest, usuario: UsuarioAtivoParaTroca, container: ContainerDep
 ) -> Response:
-    """Autoatendimento: usuário autenticado redefine sua própria senha."""
+    """Autoatendimento: redefine a própria senha, invalida sessões antigas e rotaciona o token."""
     container.autenticador.alterar_propria_senha(usuario.id, dados.senha_atual, dados.nova_senha)
+    atualizado = container.autenticador.obter_por_id(usuario.id)
+    nova_versao = atualizado.sessao_versao if atualizado is not None else usuario.sessao_versao + 1
+    novo_token = criar_token(
+        usuario.id, usuario.perfil.value, container.settings, sessao_versao=nova_versao
+    )
     log_seguranca.info("SENHA_ALTERADA_PROPRIA usuario=%s", usuario.id)
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    return Response(
+        status_code=status.HTTP_204_NO_CONTENT,
+        headers={"X-New-Access-Token": novo_token},
+    )
 
 
 @router.post("/api/v1/auth/esqueci-senha", response_model=MensagemResponse)

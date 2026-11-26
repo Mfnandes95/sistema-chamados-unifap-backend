@@ -220,6 +220,10 @@
             const d = await r.json().catch(() => ({}));
             return UI.toast(d.mensagem || 'Não foi possível alterar a senha.', 'err');
           }
+          const novoTok = r.headers.get('X-New-Access-Token');
+          if (novoTok) {
+            try { sessionStorage.setItem('unifap-api-jwt', novoTok); } catch (err) { /* ok */ }
+          }
           UI.toast('Senha alterada com sucesso.');
         } catch (err) {
           UI.toast('Erro de conexão ao alterar senha.', 'err');

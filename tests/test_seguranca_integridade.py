@@ -479,19 +479,31 @@ async def test_admin_cria_usuario_redefine_senha_e_acompanha_chamados(
         )
         assert r_fraca.status_code == 422, (senha_fraca, r_fraca.status_code)
 
-    # Próprio usuário altera sua senha autenticado → limpa a flag e libera o acesso
+    # Próprio usuário altera sua senha autenticado → limpa a flag, invalida sessões antigas e rotaciona o token
     r_alt = await client.post(
         "/api/v1/auth/alterar-senha",
         json={"senha_atual": "SenhaAdmin@2026", "nova_senha": "ChaveForte#2026"},
         headers=h_novo2,
     )
     assert r_alt.status_code == 204
+    novo_token = r_alt.headers.get("x-new-access-token")
+    assert novo_token
+    # Token antigo emitido antes da troca de senha é imediatamente invalidado (401)
     assert (await client.post("/api/v1/chamados", json=CHAMADO_VALIDO,
-                              headers=h_novo2)).status_code == 201
+                              headers=h_novo2)).status_code == 401
+    # Token rotacionado continua funcionando normalmente
+    h_novo2_rot = {"Authorization": f"Bearer {novo_token}"}
+    assert (await client.post("/api/v1/chamados", json=CHAMADO_VALIDO,
+                              headers=h_novo2_rot)).status_code == 201
     r_log3 = await client.post("/api/v1/auth/login",
                                json={"matricula": "20249999", "senha": "ChaveForte#2026"})
     assert r_log3.status_code == 200 and r_log3.json()["deve_redefinir_senha"] is False
     assert r_log3.json()["usando_senha_padrao"] is False
+    # Logout invalida sessao_versao de forma persistente (mesmo que o cache em RAM seja limpo)
+    h_log3 = {"Authorization": f"Bearer {r_log3.json()['access_token']}"}
+    assert (await client.post("/api/v1/auth/logout", headers=h_log3)).status_code == 204
+    container.revogacao._revogados.clear()  # type: ignore[attr-defined]
+    assert (await client.get("/api/v1/auth/me", headers=h_log3)).status_code == 401
 
     # Login com senha padrão sinaliza usando_senha_padrao=True para abrir o pop-up no frontend
     r_padrao = await client.post("/api/v1/auth/login",
@@ -549,4 +561,140 @@ async def test_evidencia_download_rbac_e_anti_ssrf_google_drive(
             headers=tokens["solicitante"],
         )
         assert r_ssrf.status_code == 422, (url_ruim, r_ssrf.status_code)
+
+
+async def test_bola_idor_e_bfla_escalacao_privilegio(client: AsyncClient, tokens: H) -> None:
+    """BOLA/IDOR e BFLA: impede acesso cruzado a objetos e escalação entre perfis."""
+    r_ch = await client.post("/api/v1/chamados", json=CHAMADO_VALIDO, headers=tokens["solicitante"])
+    assert r_ch.status_code == 201
+    proto = r_ch.json()["protocolo"]
+
+    # IDOR: solicitante2 não pode ler, comentar, anexar, cancelar ou avaliar chamado de solicitante
+    assert (await client.get(f"/api/v1/chamados/{proto}", headers=tokens["solicitante2"])).status_code == 404
+    assert (await client.get(f"/api/v1/chamados/{proto}/historico", headers=tokens["solicitante2"])).status_code == 404
+    assert (await client.post(
+        f"/api/v1/chamados/{proto}/cancelar",
+        json={"motivo": "Tentativa indevida de cancelamento."},
+        headers=tokens["solicitante2"],
+    )).status_code in (403, 404)
+    assert (await client.post(
+        f"/api/v1/chamados/{proto}/evidencias",
+        files={"arquivo": ("foto.png", PNG, "image/png")},
+        headers=tokens["solicitante2"],
+    )).status_code in (403, 404)
+
+    # Gestor atribui ao executor 1; executor 2 não pode iniciar/resolver/reencaminhar chamado alheio
+    assert (await client.post(
+        f"/api/v1/triagem/{proto}/atribuir",
+        json={"executor_id": "u-exe-1"},
+        headers=tokens["gestor"],
+    )).status_code == 200
+    assert (await client.post(f"/api/v1/chamados/{proto}/iniciar", headers=tokens["executor2"])).status_code in (403, 404)
+    assert (await client.post(
+        f"/api/v1/triagem/{proto}/reencaminhar",
+        json={"motivo": "Tentativa de outro executor reencaminhar."},
+        headers=tokens["executor2"],
+    )).status_code in (403, 404)
+
+    # BFLA: perfis não-admin bloqueados em /usuarios e /redefinir-senha
+    for papel in ("solicitante", "executor", "gestor"):
+        assert (await client.get("/api/v1/usuarios", headers=tokens[papel])).status_code == 403
+        assert (await client.post(
+            "/api/v1/usuarios/u-sol-1/redefinir-senha",
+            json={"nova_senha": "Tentativa@2026"},
+            headers=tokens[papel],
+        )).status_code == 403
+
+    # BFLA: solicitante e executor bloqueados em relatórios e atribuição
+    for papel in ("solicitante", "executor"):
+        assert (await client.get("/api/v1/relatorios/historico", headers=tokens[papel])).status_code == 403
+        assert (await client.get("/api/v1/relatorios/exportar", headers=tokens[papel])).status_code == 403
+        assert (await client.post(
+            f"/api/v1/triagem/{proto}/atribuir",
+            json={"executor_id": "u-exe-1"},
+            headers=tokens[papel],
+        )).status_code == 403
+
+
+def test_anti_ssrf_redirect_por_salto_google_drive() -> None:
+    """Anti-SSRF por salto: só permite HTTPS nos hosts oficiais do Google Drive."""
+    import httpx
+    from src.core.exceptions import ValidacaoDominio
+    from src.modules.evidencias.storage_service import _validar_url_redirect_drive
+
+    _validar_url_redirect_drive(httpx.URL("https://drive.google.com/uc?export=download&id=123"))
+    _validar_url_redirect_drive(httpx.URL("https://drive.usercontent.google.com/download?id=123"))
+    _validar_url_redirect_drive(httpx.URL("https://doc-0c-4g-docs.googleusercontent.com/docs/securesc"))
+
+    for ruim in (
+        "http://drive.google.com/uc?id=123",
+        "https://169.254.169.254/latest/meta-data/",
+        "https://evil.com/arquivo.png",
+        "https://googleusercontent.com.evil.com/x",
+        "http://127.0.0.1:8080/health",
+    ):
+        with pytest.raises(ValidacaoDominio):
+            _validar_url_redirect_drive(httpx.URL(ruim))
+
+
+async def test_upload_poliglota_spoofing_e_content_disposition(
+    client: AsyncClient, tokens: H
+) -> None:
+    """Rejeita arquivo vazio/poliglota e escapa Content-Disposition no download."""
+    proto = (await client.post("/api/v1/chamados", json=CHAMADO_VALIDO,
+                               headers=tokens["solicitante"])).json()["protocolo"]
+
+    # Spoofing: extensão .jpg + MIME image/jpeg, mas conteúdo HTML/XSS
+    r_xss = await client.post(
+        f"/api/v1/chamados/{proto}/evidencias",
+        files={"arquivo": ("falso.jpg", b"<html><script>alert(1)</script></html>", "image/jpeg")},
+        headers=tokens["solicitante"],
+    )
+    assert r_xss.status_code == 415
+
+    # Arquivo vazio (0 bytes)
+    r_vazio = await client.post(
+        f"/api/v1/chamados/{proto}/evidencias",
+        files={"arquivo": ("vazio.png", b"", "image/png")},
+        headers=tokens["solicitante"],
+    )
+    assert r_vazio.status_code == 415
+
+    # Nome com aspas e ponto-e-vírgula não quebra Content-Disposition
+    r_ok = await client.post(
+        f"/api/v1/chamados/{proto}/evidencias",
+        files={"arquivo": ('foto";evil=1.png', PNG, "image/png")},
+        headers=tokens["solicitante"],
+    )
+    assert r_ok.status_code == 201
+    ev_id = r_ok.json()["id"]
+    r_dl = await client.get(f"/api/v1/chamados/{proto}/evidencias/{ev_id}",
+                            headers=tokens["solicitante"])
+    assert r_dl.status_code == 200
+    assert "evil=1" not in r_dl.headers.get("content-disposition", "").split(";")[0]
+
+
+async def test_postgrest_filter_injection_e_cors_malicioso(
+    client: AsyncClient, tokens: H
+) -> None:
+    """Rejeita payloads de injeção PostgREST/path traversal e bloqueia CORS malicioso."""
+    for mat_ruim in (
+        "20230001,id.neq.null",
+        "20230001)or(id.neq.null",
+        "'; DROP TABLE perfis;--",
+    ):
+        r = await client.post("/api/v1/auth/login",
+                              json={"matricula": mat_ruim, "senha": SENHA_PADRAO_SEED})
+        assert r.status_code in (401, 422), (mat_ruim, r.status_code)
+
+    assert (await client.get("/api/v1/chamados/2026-000001,id.neq.null",
+                             headers=tokens["admin"])).status_code == 422
+
+    # CORS: origem externa não autorizada não recebe Access-Control-Allow-Origin
+    r_cors = await client.get(
+        "/api/v1/info", headers={"Origin": "https://site-malicioso.example"}
+    )
+    assert r_cors.status_code == 200
+    assert "access-control-allow-origin" not in r_cors.headers
+
 

@@ -148,7 +148,8 @@ def criar_app(settings: Settings | None = None, container: Container | None = No
     # V16: auth é Bearer JWT (sem cookies), portanto allow_credentials=False.
     app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins,
                        allow_credentials=False, allow_methods=["GET", "POST", "OPTIONS"],
-                       allow_headers=["Authorization", "Content-Type"])
+                       allow_headers=["Authorization", "Content-Type"],
+                       expose_headers=["X-New-Access-Token"])
     registrar_handlers(app)
     for r in (auth_router, catalogo_router, chamados_router, triagem_router, relatorios_router):
         app.include_router(r)

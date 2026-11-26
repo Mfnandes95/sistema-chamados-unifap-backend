@@ -132,9 +132,24 @@ class InMemoryAuthAdapter:
             if reg is None:
                 raise RecursoNaoEncontrado("Usuário não encontrado.")
             usuario_atualizado = reg.usuario.model_copy(
-                update={"deve_redefinir_senha": deve_redefinir_senha}
+                update={
+                    "deve_redefinir_senha": deve_redefinir_senha,
+                    "sessao_versao": reg.usuario.sessao_versao + 1,
+                }
             )
             novo = _RegistroUsuario(usuario_atualizado, gerar_hash_senha(nova_senha))
+            self._por_id[usuario_id] = novo
+            self._por_matricula[usuario_atualizado.matricula] = novo
+
+    def invalidar_sessoes(self, usuario_id: str) -> None:
+        with self._lock:
+            reg = self._por_id.get(usuario_id)
+            if reg is None:
+                return
+            usuario_atualizado = reg.usuario.model_copy(
+                update={"sessao_versao": reg.usuario.sessao_versao + 1}
+            )
+            novo = _RegistroUsuario(usuario_atualizado, reg.hash_senha)
             self._por_id[usuario_id] = novo
             self._por_matricula[usuario_atualizado.matricula] = novo
 

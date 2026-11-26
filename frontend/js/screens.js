@@ -452,8 +452,9 @@
                 toast(errD.mensagem || 'Não foi possível redefinir a senha.', 'err');
                 continue;
               }
+              const novoTok = rAlt.headers.get('X-New-Access-Token') || tok;
               toast('Nova senha definida com sucesso.');
-              return finalizarEntrada(uApi, tok);
+              return finalizarEntrada(uApi, novoTok);
             }
           }
           finalizarEntrada(uApi, tok);

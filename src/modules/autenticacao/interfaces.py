@@ -30,6 +30,8 @@ class IAutenticadorInstitucional(Protocol):
 
     def confirmar_recuperacao_senha(self, token: str, nova_senha: str) -> None: ...
 
+    def invalidar_sessoes(self, usuario_id: str) -> None: ...
+
 
 class ILimitadorTentativas(Protocol):
     """Janela deslizante de falhas por chave (conta ou IP) — RNF04 / V02."""

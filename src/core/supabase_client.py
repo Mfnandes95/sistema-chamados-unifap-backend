@@ -121,18 +121,22 @@ class SupabaseClient:
         *,
         deve_redefinir_senha: bool = False,
         senha_alterada: bool = False,
+        sessao_versao: int | None = None,
     ) -> None:
         """Atualiza a senha e o `app_metadata` no Supabase Auth."""
+        app_meta: dict[str, Any] = {
+            "deve_redefinir_senha": deve_redefinir_senha,
+            "senha_alterada": senha_alterada,
+        }
+        if sessao_versao is not None:
+            app_meta["sessao_versao"] = sessao_versao
         try:
             r = httpx.put(
                 f"{self._root_url}/auth/v1/admin/users/{usuario_id}",
                 headers=self._auth_admin_headers(),
                 json={
                     "password": nova_senha,
-                    "app_metadata": {
-                        "deve_redefinir_senha": deve_redefinir_senha,
-                        "senha_alterada": senha_alterada,
-                    },
+                    "app_metadata": app_meta,
                 },
                 timeout=15.0,
             )
@@ -142,6 +146,21 @@ class SupabaseClient:
         if r.status_code >= 400:
             log_app.error("Erro Supabase Auth atualizar senha (%s): %s", r.status_code, r.text[:300])
             raise ErroPersistenciaSupabase("Não foi possível atualizar a senha.")
+
+    def atualizar_app_metadata_auth(self, usuario_id: str, campos: dict[str, Any]) -> None:
+        """Mescla campos no `app_metadata` no Supabase Auth (ex.: invalidação persistente de sessões)."""
+        try:
+            r = httpx.put(
+                f"{self._root_url}/auth/v1/admin/users/{usuario_id}",
+                headers=self._auth_admin_headers(),
+                json={"app_metadata": campos},
+                timeout=15.0,
+            )
+        except httpx.HTTPError as exc:
+            log_app.error("Falha de rede ao atualizar app_metadata no Supabase Auth: %s", exc)
+            return
+        if r.status_code >= 400:
+            log_app.error("Erro Supabase Auth atualizar app_metadata (%s): %s", r.status_code, r.text[:300])
 
     def solicitar_recuperacao_auth(self, email: str, api_key: str) -> None:
         """Dispara e-mail de recuperação de senha nativo do Supabase Auth."""

@@ -43,7 +43,12 @@ def _escolher_perfil(papeis: Sequence[str]) -> Perfil:
     return Perfil.SOLICITANTE
 
 
-def _para_usuario(row: dict[str, Any], *, deve_redefinir_senha: bool = False) -> UsuarioAutenticado:
+def _para_usuario(
+    row: dict[str, Any],
+    *,
+    deve_redefinir_senha: bool = False,
+    sessao_versao: int = 1,
+) -> UsuarioAutenticado:
     papeis = row.get("perfis") or ["solicitante"]
     ativo = bool(row.get("vinculo_ativo", False)) and bool(row.get("acesso_local_ativo", True))
     return UsuarioAutenticado(
@@ -55,6 +60,7 @@ def _para_usuario(row: dict[str, Any], *, deve_redefinir_senha: bool = False) ->
         vinculo_ativo=ativo,
         setor=str(row["setor_id"]) if row.get("setor_id") else None,
         deve_redefinir_senha=deve_redefinir_senha,
+        sessao_versao=sessao_versao,
     )
 
 
@@ -103,7 +109,8 @@ class SupabaseAuthAdapter:
         if not self._validar_credenciais(encontrado, senha, ja_alterou_senha=ja_alterou):
             raise NaoAutenticado("Matrícula ou senha inválidas.")
         deve_trocar = bool(meta.get("deve_redefinir_senha", False))
-        return _para_usuario(encontrado, deve_redefinir_senha=deve_trocar)
+        versao = int(meta.get("sessao_versao", 1))
+        return _para_usuario(encontrado, deve_redefinir_senha=deve_trocar, sessao_versao=versao)
 
     def obter_por_id(self, usuario_id: str) -> UsuarioAutenticado | None:
         linhas = self._client.select(
@@ -112,7 +119,11 @@ class SupabaseAuthAdapter:
         if not linhas:
             return None
         meta = self._client.obter_app_metadata_auth(usuario_id)
-        return _para_usuario(linhas[0], deve_redefinir_senha=bool(meta.get("deve_redefinir_senha", False)))
+        return _para_usuario(
+            linhas[0],
+            deve_redefinir_senha=bool(meta.get("deve_redefinir_senha", False)),
+            sessao_versao=int(meta.get("sessao_versao", 1)),
+        )
 
     def listar_por_perfil(self, perfil: Perfil) -> Sequence[UsuarioAutenticado]:
         linhas = self._client.select("perfis", {"select": "*"})
@@ -153,10 +164,14 @@ class SupabaseAuthAdapter:
     def redefinir_senha(
         self, usuario_id: str, nova_senha: str, *, deve_redefinir_senha: bool = False
     ) -> None:
-        if self.obter_por_id(usuario_id) is None:
+        alvo = self.obter_por_id(usuario_id)
+        if alvo is None:
             raise RecursoNaoEncontrado("Usuário não encontrado.")
         self._client.atualizar_senha_auth(
-            usuario_id, nova_senha, deve_redefinir_senha=deve_redefinir_senha
+            usuario_id,
+            nova_senha,
+            deve_redefinir_senha=deve_redefinir_senha,
+            sessao_versao=alvo.sessao_versao + 1,
         )
 
     def alterar_propria_senha(
@@ -171,6 +186,7 @@ class SupabaseAuthAdapter:
             raise NaoAutenticado("Senha atual incorreta.")
         meta = self._client.obter_app_metadata_auth(usuario_id)
         ja_alterou = bool(meta.get("senha_alterada", False))
+        versao_atual = int(meta.get("sessao_versao", 1))
         if not self._validar_credenciais(linhas[0], senha_atual, ja_alterou_senha=ja_alterou):
             raise NaoAutenticado("Senha atual incorreta.")
         validar_forca_senha(
@@ -179,7 +195,18 @@ class SupabaseAuthAdapter:
             nome=str(linhas[0]["nome"]),
         )
         self._client.atualizar_senha_auth(
-            usuario_id, nova_senha, deve_redefinir_senha=False, senha_alterada=True
+            usuario_id,
+            nova_senha,
+            deve_redefinir_senha=False,
+            senha_alterada=True,
+            sessao_versao=versao_atual + 1,
+        )
+
+    def invalidar_sessoes(self, usuario_id: str) -> None:
+        meta = self._client.obter_app_metadata_auth(usuario_id)
+        versao_atual = int(meta.get("sessao_versao", 1))
+        self._client.atualizar_app_metadata_auth(
+            usuario_id, {"sessao_versao": versao_atual + 1}
         )
 
     def solicitar_recuperacao_senha(self, email: str) -> str | None:

@@ -63,13 +63,17 @@ class ClaimsToken:
     perfil: str
     jti: str
     expira_em: datetime
+    sessao_versao: int = 1
 
 
-def criar_token(sub: str, perfil: str, settings: Settings) -> str:
+def criar_token(
+    sub: str, perfil: str, settings: Settings, *, sessao_versao: int = 1
+) -> str:
     agora = datetime.now(UTC)
     payload: dict[str, Any] = {
         "sub": sub,
         "perfil": perfil,
+        "sv": sessao_versao,
         "iat": agora,
         "nbf": agora,
         "exp": agora + timedelta(minutes=settings.jwt_expire_minutes),
@@ -95,7 +99,8 @@ def decodificar_token(token: str, settings: Settings) -> ClaimsToken:
     except jwt.PyJWTError as exc:
         raise NaoAutenticado("Token inválido.") from exc
     sub, perfil, jti, exp = dados["sub"], dados.get("perfil"), dados["jti"], dados["exp"]
+    sv = dados.get("sv", 1)
     if not (isinstance(sub, str) and isinstance(perfil, str) and isinstance(jti, str)
-            and isinstance(exp, int)):
+            and isinstance(exp, int) and isinstance(sv, int) and not isinstance(sv, bool)):
         raise NaoAutenticado("Token inválido.")
-    return ClaimsToken(sub, perfil, jti, datetime.fromtimestamp(exp, UTC))
+    return ClaimsToken(sub, perfil, jti, datetime.fromtimestamp(exp, UTC), sv)
