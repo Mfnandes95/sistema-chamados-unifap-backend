@@ -5,8 +5,9 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from datetime import timedelta
 
-from fastapi import FastAPI
+from fastapi import FastAPI, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from src.core.config import Settings, obter_settings
 from src.core.container import Container
@@ -174,20 +175,35 @@ def criar_app(settings: Settings | None = None, container: Container | None = No
             dados["redoc"] = "/redoc"
         return dados
 
+    @app.get("/live", tags=["infra"])
+    def live() -> dict[str, str]:
+        return {"status": "ok"}
+
     @app.get("/health", tags=["infra"])
-    def health() -> dict[str, object]:
+    def health() -> JSONResponse:
         if supabase_client is not None:
             conectado = supabase_client.healthcheck()
-            if settings.producao:
-                return {"status": "ok" if conectado else "degradado"}
-            return {
-                "status": "ok" if conectado else "degradado",
-                "persistencia": "supabase",
-                "banco_conectado": conectado,
-            }
-        if settings.producao:
-            return {"status": "ok"}
-        return {"status": "ok", "persistencia": "memoria", "banco_conectado": True}
+            corpo_supabase: dict[str, object] = (
+                {"status": "ok" if conectado else "degradado"}
+                if settings.producao
+                else {
+                    "status": "ok" if conectado else "degradado",
+                    "persistencia": "supabase",
+                    "banco_conectado": conectado,
+                }
+            )
+            return JSONResponse(
+                status_code=(
+                    status.HTTP_200_OK if conectado else status.HTTP_503_SERVICE_UNAVAILABLE
+                ),
+                content=corpo_supabase,
+            )
+        corpo_memoria: dict[str, object] = (
+            {"status": "ok"}
+            if settings.producao
+            else {"status": "ok", "persistencia": "memoria", "banco_conectado": True}
+        )
+        return JSONResponse(status_code=status.HTTP_200_OK, content=corpo_memoria)
 
     montar_frontend(app)
 

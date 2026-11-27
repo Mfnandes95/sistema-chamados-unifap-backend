@@ -1,8 +1,13 @@
-from typing import cast
+from pathlib import Path
+from typing import Literal, cast
 
-from httpx import AsyncClient
+import pytest
+from httpx import ASGITransport, AsyncClient
 
+from src.core.config import Settings
 from src.core.container import Container
+from src.core.supabase_client import SupabaseClient
+from src.main import criar_app
 from src.modules.notificacoes.service import BackgroundNotificationService
 from tests.conftest import CHAMADO_VALIDO
 
@@ -155,3 +160,42 @@ async def test_evidencia_rejeitada(client: AsyncClient, tokens: H) -> None:
     r = await client.post(url, files={"arquivo": ("x.png", grande, "image/png")},
                           headers=tokens["solicitante"])
     assert r.status_code == 413
+
+
+async def test_live_e_health_supabase_degradado(
+    client: AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    r_live = await client.get("/live")
+    assert r_live.status_code == 200 and r_live.json() == {"status": "ok"}
+
+    estado_banco = {"ok": True}
+    monkeypatch.setattr(SupabaseClient, "healthcheck", lambda _self: estado_banco["ok"])
+
+    casos: list[tuple[Literal["desenvolvimento", "producao"], dict[str, object], dict[str, object]]] = [
+        ("desenvolvimento", {"status": "ok", "persistencia": "supabase", "banco_conectado": True},
+         {"status": "degradado", "persistencia": "supabase", "banco_conectado": False}),
+        ("producao", {"status": "ok"}, {"status": "degradado"}),
+    ]
+    for ambiente, esperado_ok, esperado_degradado in casos:
+        s = Settings(
+            ambiente=ambiente,
+            jwt_secret="x" * 40,
+            cors_origins=["https://unifap.br"],
+            permitir_senha_demo=False,
+            upload_dir=tmp_path / f"u-{ambiente}",
+            supabase_url="https://exemplo.supabase.co",
+            supabase_secret_key="sb_secret_test",
+        )
+        app_sup = criar_app(s)
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app_sup), base_url="http://test") as c:
+                estado_banco["ok"] = True
+                r_ok = await c.get("/health")
+                assert r_ok.status_code == 200 and r_ok.json() == esperado_ok
+
+                estado_banco["ok"] = False
+                r_err = await c.get("/health")
+                assert r_err.status_code == 503 and r_err.json() == esperado_degradado
+        finally:
+            if app_sup.state.supabase_client is not None:
+                app_sup.state.supabase_client.close()

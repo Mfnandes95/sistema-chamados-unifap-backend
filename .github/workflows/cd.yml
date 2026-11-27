@@ -1,0 +1,71 @@
+name: CD (Railway)
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cd-production
+  cancel-in-progress: false
+
+jobs:
+  deploy-producao:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        vars.RAILWAY_CD_ENABLED == 'true'
+      )
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Baixar código
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Validar segredo do Railway
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          if [ -z "$RAILWAY_TOKEN" ]; then
+            echo "::error::Secret RAILWAY_TOKEN não configurado em Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+
+      - name: Instalar Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Publicar no Railway
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_SERVICE: ${{ vars.RAILWAY_SERVICE }}
+          COMMIT_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          if [ -n "$RAILWAY_SERVICE" ]; then
+            railway up --ci --service "$RAILWAY_SERVICE" -m "CD GitHub Actions ($COMMIT_SHA)"
+          else
+            railway up --ci -m "CD GitHub Actions ($COMMIT_SHA)"
+          fi
+
+      - name: Smoke test pós-deploy
+        env:
+          APP_URL: ${{ vars.APP_URL }}
+        run: |
+          if [ -z "$APP_URL" ]; then
+            echo "::notice::Variable APP_URL não configurada; smoke test HTTP ignorado."
+            exit 0
+          fi
+          BASE_URL="${APP_URL%/}"
+          BODY="$(curl --fail --silent --show-error --retry 12 --retry-delay 5 --retry-all-errors "$BASE_URL/health")"
+          echo "Resposta /health: $BODY"
+          echo "$BODY" | grep -q '"ok"'
+          curl --fail --silent --show-error --retry 5 --retry-delay 3 "$BASE_URL/api/v1/info" > /dev/null
+          echo "Smoke test concluído com sucesso em $BASE_URL"
